@@ -14,11 +14,21 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
+	var s strings.Builder
+
+	// Render title bar spanning full width
+	titleText := agentNameStyle.Render("amux")
+	titleText += agentIDStyle.Render("  sessions")
+	titleText += agentIDStyle.Render(" • ")
+	titleText += agentIDStyle.Render("kill")
+	s.WriteString(titleText)
+	s.WriteString("\n\n")
+
 	// Calculate column widths (20% for list, 80% for detail)
 	listWidth := m.width * 20 / 100
 	detailWidth := m.width - listWidth - 1 // -1 for separator
 
-	// Render left column (agent list)
+	// Render left column (agent list - without title)
 	leftColumn := m.renderAgentList(listWidth)
 
 	// Render right column (detail view)
@@ -36,26 +46,19 @@ func (m Model) View() string {
 	}
 
 	// Combine columns side by side
-	return lipgloss.JoinHorizontal(
+	s.WriteString(lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		leftColumn,
 		lipgloss.NewStyle().Foreground(colorGray).Render("│"),
 		rightColumn,
-	)
+	))
+
+	return s.String()
 }
 
 // renderAgentList renders the left column with agent list
 func (m Model) renderAgentList(width int) string {
 	var s strings.Builder
-
-	// Title bar (circumflex-style)
-	titleText := agentNameStyle.Render("amux")
-	titleText += agentIDStyle.Render("  sessions")
-	titleText += agentIDStyle.Render(" • ")
-	titleText += agentIDStyle.Render("kill")
-	s.WriteString(titleText)
-	s.WriteString("\n")
-	s.WriteString("\n")
 
 	// Loading state (but still show agents if we have them)
 	if m.loading && len(m.agents) == 0 {

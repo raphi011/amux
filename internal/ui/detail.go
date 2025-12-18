@@ -9,18 +9,6 @@ import (
 func (m Model) renderDetailView(width int) string {
 	var s strings.Builder
 
-	// Title showing selected agent
-	if len(m.agents) > 0 && m.cursor < len(m.agents) {
-		agent := m.agents[m.cursor]
-		title := titleStyle.Render(fmt.Sprintf("Messages: %s", agent.ProjectName))
-		s.WriteString(title)
-	} else {
-		s.WriteString(titleStyle.Render("Messages"))
-	}
-	s.WriteString("\n")
-	s.WriteString(separatorStyle.Render(strings.Repeat("─", width-2)))
-	s.WriteString("\n")
-
 	// Calculate how many lines we can show
 	availableHeight := m.height - 4 // Reserve space for title, separator, help
 
