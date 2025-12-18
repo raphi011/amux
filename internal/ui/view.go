@@ -24,12 +24,16 @@ func (m Model) View() string {
 	// Render right column (detail view)
 	rightColumn := m.renderDetailView(detailWidth)
 
+	// Apply fixed height to both columns to ensure consistent alignment
+	leftStyle := lipgloss.NewStyle().Width(listWidth).Height(m.height)
+	rightStyle := lipgloss.NewStyle().Width(detailWidth).Height(m.height)
+
 	// Combine columns side by side
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		leftColumn,
-		lipgloss.NewStyle().Foreground(colorGray).Render("│"),
-		rightColumn,
+		leftStyle.Render(leftColumn),
+		lipgloss.NewStyle().Foreground(colorGray).Height(m.height).Render("│"),
+		rightStyle.Render(rightColumn),
 	)
 }
 
