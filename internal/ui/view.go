@@ -33,7 +33,7 @@ func (m Model) View() string {
 
 	// No agents
 	if len(m.agents) == 0 {
-		s.WriteString(loadingStyle.Render("No active agents (active in last 5 minutes)"))
+		s.WriteString(loadingStyle.Render("No active agents (active in last 30 minutes)"))
 		s.WriteString("\n")
 		s.WriteString("\n")
 		s.WriteString(helpBarStyle.Render("[r] Refresh  [q] Quit"))
