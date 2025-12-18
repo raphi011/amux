@@ -96,22 +96,28 @@ func (m Model) renderAgentList(width int) string {
 		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ↓ %d more below...", remaining)))
 	}
 
-	// Help bar
+	// Help bar (two rows)
 	s.WriteString("\n")
-	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
+	s.WriteString(separatorStyle.Render(strings.Repeat("─", width-2)))
 	s.WriteString("\n")
 
-	helpText := "[↑↓/jk] Navigate  [g/G] Top/Bottom  [r] Refresh  [a] Auto-refresh: "
+	// First row
+	helpLine1 := "[↑↓/jk] [g/G] [←→/hl]"
+	s.WriteString(helpBarStyle.Render(helpLine1))
+	s.WriteString("\n")
+
+	// Second row
+	helpLine2 := "[r] Refresh [a] Auto: "
 	if m.autoRefresh {
-		helpText += "ON"
+		helpLine2 += "ON"
 	} else {
-		helpText += "OFF"
+		helpLine2 += "OFF"
 	}
-	helpText += "  [q] Quit"
+	helpLine2 += " [q] Quit"
 	if m.loading {
-		helpText += "  " + loadingStyle.Render("⟳ Refreshing...")
+		helpLine2 += " " + loadingStyle.Render("⟳")
 	}
-	s.WriteString(helpBarStyle.Render(helpText))
+	s.WriteString(helpBarStyle.Render(helpLine2))
 	s.WriteString("\n")
 
 	return s.String()
