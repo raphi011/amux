@@ -170,21 +170,7 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	}
 	content.WriteString("\n")
 
-	// Third line: current task
-	content.WriteString("    ")
-	content.WriteString(agentIDStyle.Render("Task: "))
-	content.WriteString(GetTaskStatusStyle(ag.TaskStatus).Render())
-	content.WriteString(" ")
-	content.WriteString(taskContentStyle.Render(truncateString(ag.CurrentTask, 60)))
-	content.WriteString("\n")
-
-	// Fourth line: last active
-	content.WriteString("    ")
-	content.WriteString(agentIDStyle.Render("Last active: "))
-	content.WriteString(timeAgoStyle.Render(ag.TimeSinceActive()))
-	content.WriteString("\n")
-
-	// Fifth line: token usage
+	// Third line: token usage
 	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Tokens: "))
 	content.WriteString(projectStyle.Render(agent.FormatTokenCount(ag.TokensUsed)))
