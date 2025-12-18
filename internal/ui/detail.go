@@ -9,54 +9,37 @@ import (
 func (m Model) renderDetailView(width int) string {
 	var s strings.Builder
 
-	// Calculate how many lines we can show
-	availableHeight := m.height - 4 // Reserve space for title, separator, help
-
-	// Render messages
-	if len(m.detailMessages) == 0 {
+	if len(m.detailLines) == 0 {
 		s.WriteString(agentIDStyle.Render("No messages"))
 		s.WriteString("\n")
-	} else {
-		// Calculate visible message range
-		start := m.detailScroll
-		linesShown := 0
-
-		for i := start; i < len(m.detailMessages) && linesShown < availableHeight; i++ {
-			msg := m.detailMessages[i]
-			lines := strings.Split(msg, "\n")
-
-			for _, line := range lines {
-				if linesShown >= availableHeight {
-					break
-				}
-				// Wrap long lines to fit width
-				wrapped := wrapText(line, width-4)
-				for _, wl := range wrapped {
-					if linesShown >= availableHeight {
-						break
-					}
-					s.WriteString("  ")
-					s.WriteString(wl)
-					s.WriteString("\n")
-					linesShown++
-				}
-			}
-
-			// Add separator between messages
-			if i < len(m.detailMessages)-1 && linesShown < availableHeight {
-				s.WriteString("\n")
-				linesShown++
-			}
-		}
+		return s.String()
 	}
 
-	// Add scroll indicator if needed
-	if len(m.detailMessages) > 0 {
+	// Calculate visible range
+	start := m.detailViewportTop
+	end := min(start+m.detailViewHeight, m.detailLineCount)
+
+	// Render visible lines
+	for i := start; i < end; i++ {
+		s.WriteString("  ") // Left padding
+		s.WriteString(m.detailLines[i])
 		s.WriteString("\n")
-		s.WriteString(agentIDStyle.Render(fmt.Sprintf("Message %d/%d", m.detailScroll+1, len(m.detailMessages))))
 	}
+
+	// Scroll position indicator
+	indicator := fmt.Sprintf("Lines %d-%d/%d", start+1, end, m.detailLineCount)
+	s.WriteString("\n")
+	s.WriteString(agentIDStyle.Render(indicator))
 
 	return s.String()
+}
+
+// min returns the smaller of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // wrapText wraps text to fit within the specified width

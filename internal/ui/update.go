@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/glamour"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/raphaelgruber/amux/internal/claude"
+	"github.com/raphaelgruber/amux/internal/watcher"
 )
 
 // Update handles incoming messages and updates the model
@@ -36,14 +36,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tickMsg:
-		// Auto-refresh: reload agents (only if enabled and not currently loading)
-		if m.autoRefresh && !m.loading {
+	case watcher.FileChangedMsg:
+		// File changed, reload agents if not already loading
+		var cmd tea.Cmd
+		if !m.loading {
 			m.loading = true
-			return m, tea.Batch(loadAgentsCmd(), tickCmd())
+			m.lastUpdate = time.Now() // Update timestamp to show refresh happened
+			cmd = loadAgentsCmd()
 		}
-		// Schedule next tick
-		return m, tickCmd()
+		// Continue watching for next event
+		if m.watcher != nil && m.ctx != nil {
+			return m, tea.Batch(cmd, m.watcher.Start(m.ctx))
+		}
+		return m, cmd
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -57,6 +62,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.viewportSize < 1 {
 			m.viewportSize = 1
 		}
+
+		// Calculate detail view height (reserve space for indicator at bottom)
+		m.detailViewHeight = msg.Height - 5 // Reserve for title bar and scroll indicator
+		if m.detailViewHeight < 1 {
+			m.detailViewHeight = 1
+		}
+
+		// Rebuild lines with new width for proper wrapping
+		if len(m.agents) > 0 && m.cursor < len(m.agents) {
+			m.loadDetailMessages()
+		}
+
 		return m, nil
 	}
 
@@ -65,9 +82,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKeyPress handles keyboard input
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle actual PgUp/PgDn keys by checking the key string
+	keyStr := msg.String()
+
+	// Debug - check what pgup/pgdn produce
+	// These work in most terminals
+	if strings.Contains(keyStr, "pgup") || strings.Contains(keyStr, "pageup") {
+		m.detailViewportTop = max(0, m.detailViewportTop-m.detailViewHeight)
+		return m, nil
+	}
+	if strings.Contains(keyStr, "pgdown") || strings.Contains(keyStr, "pagedown") {
+		maxScroll := max(0, m.detailLineCount-m.detailViewHeight)
+		m.detailViewportTop = min(maxScroll, m.detailViewportTop+m.detailViewHeight)
+		return m, nil
+	}
+
 	// Always handle quit keys first
-	switch msg.String() {
+	switch keyStr {
 	case "ctrl+c", "q", "esc":
+		// Cleanup: stop watcher
+		if m.watcher != nil && m.cancel != nil {
+			m.cancel()
+			m.watcher.Close()
+		}
 		return m, tea.Quit
 	}
 
@@ -93,13 +130,13 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if num > 0 && num <= len(m.agents) {
 			m.cursor = num - 1
 			// Adjust viewport to show cursor
-			if m.cursor < m.viewportTop {
-				m.viewportTop = m.cursor
-			} else if m.cursor >= m.viewportTop+m.viewportSize {
-				m.viewportTop = m.cursor - m.viewportSize + 1
+			if m.cursor < m.agentViewportTop {
+				m.agentViewportTop = m.cursor
+			} else if m.cursor >= m.agentViewportTop+m.viewportSize {
+				m.agentViewportTop = m.cursor - m.viewportSize + 1
 			}
 			m.loadDetailMessages()
-			m.detailScroll = 0
+			m.detailViewportTop = 0
 		}
 		return m, nil
 	}
@@ -107,55 +144,42 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle navigation and other keys
 	switch msg.String() {
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-			// Scroll up if cursor moves above viewport
-			if m.cursor < m.viewportTop {
-				m.viewportTop = m.cursor
-			}
-			m.loadDetailMessages()
-			m.detailScroll = 0
+		// Scroll detail view up by one line
+		if m.detailViewportTop > 0 {
+			m.detailViewportTop--
 		}
 
 	case "down", "j":
-		if m.cursor < len(m.agents)-1 {
-			m.cursor++
-			// Scroll down if cursor moves below viewport
-			if m.cursor >= m.viewportTop+m.viewportSize {
-				m.viewportTop = m.cursor - m.viewportSize + 1
-			}
-			m.loadDetailMessages()
-			m.detailScroll = 0
+		// Scroll detail view down by one line
+		maxScroll := max(0, m.detailLineCount-m.detailViewHeight)
+		if m.detailViewportTop < maxScroll {
+			m.detailViewportTop++
 		}
 
 	case "g":
-		// Go to top
-		m.cursor = 0
-		m.viewportTop = 0
+		// Jump to top of conversation
+		m.detailViewportTop = 0
 
 	case "G":
-		// Go to bottom
-		if len(m.agents) > 0 {
-			m.cursor = len(m.agents) - 1
-			// Adjust viewport to show bottom
-			m.viewportTop = max(0, m.cursor-m.viewportSize+1)
-		}
+		// Jump to bottom of conversation
+		m.detailViewportTop = max(0, m.detailLineCount-m.detailViewHeight)
 
-	case "a":
-		// Toggle auto-refresh
-		m.autoRefresh = !m.autoRefresh
+	case "ctrl+b", "b":
+		// Scroll up by viewport height (ctrl+b or b key)
+		m.detailViewportTop = max(0, m.detailViewportTop-m.detailViewHeight)
 
-	case "left", "h":
-		// Scroll detail up
-		if m.detailScroll > 0 {
-			m.detailScroll--
-		}
+	case "ctrl+f", "f", " ":
+		// Scroll down by viewport height (ctrl+f, f, or space)
+		maxScroll := max(0, m.detailLineCount-m.detailViewHeight)
+		m.detailViewportTop = min(maxScroll, m.detailViewportTop+m.detailViewHeight)
 
-	case "right", "l":
-		// Scroll detail down
-		if m.detailScroll < len(m.detailMessages)-1 {
-			m.detailScroll++
-		}
+	case "home":
+		// Jump to top of conversation
+		m.detailViewportTop = 0
+
+	case "end":
+		// Jump to bottom of conversation
+		m.detailViewportTop = max(0, m.detailLineCount-m.detailViewHeight)
 
 	case "x", "X":
 		// Kill the selected Claude Code process
@@ -184,28 +208,31 @@ func max(a, b int) int {
 // loadDetailMessages loads and formats messages for the currently selected agent
 func (m *Model) loadDetailMessages() {
 	if len(m.agents) == 0 || m.cursor >= len(m.agents) {
-		m.detailMessages = []string{"No agent selected"}
-		m.detailScroll = 0
+		m.detailLines = []string{"No agent selected"}
+		m.detailLineCount = 1
+		m.detailViewportTop = 0
 		return
 	}
 
 	agent := m.agents[m.cursor]
 	entries, err := claude.ParseJSONL(agent.JSONLPath)
 	if err != nil {
-		m.detailMessages = []string{fmt.Sprintf("Error loading messages: %v", err)}
-		m.detailScroll = 0
+		m.detailLines = []string{fmt.Sprintf("Error loading messages: %v", err)}
+		m.detailLineCount = 1
+		m.detailViewportTop = 0
 		return
 	}
 
-	// Create markdown renderer once for all assistant messages
-	// Use dark style for proper markdown rendering
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
-		glamour.WithWordWrap(m.width*80/100),
-	)
+	// Calculate content width for wrapping (70% of terminal, minus padding)
+	contentWidth := m.width*70/100 - 4
+	if contentWidth < 40 {
+		contentWidth = 40 // Minimum width
+	}
+
+	// Build flat array of all lines
+	var allLines []string
 
 	// Format each message (in reverse order - newest first)
-	messages := make([]string, 0, len(entries))
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 
@@ -223,40 +250,56 @@ func (m *Model) loadDetailMessages() {
 			continue
 		}
 
-		// Format timestamp with color
+		// Format header: "[timestamp] ROLE:"
 		timeStr := messageTimeStyle.Render("[" + entry.Timestamp.Format("15:04:05") + "]")
-
-		// Format role with color
 		var roleStr string
-		var contentStyled string
 		if role == "user" {
 			roleStr = userRoleStyle.Render("USER")
-			contentStyled = userMessageStyle.Render(content)
 		} else {
 			roleStr = assistantRoleStyle.Render("ASSISTANT")
-			// Render markdown for assistant messages
-			if renderer != nil {
-				rendered, err := renderer.Render(content)
-				if err == nil {
-					contentStyled = rendered
-				} else {
-					// Fallback to plain text if markdown rendering fails
-					contentStyled = assistantMessageStyle.Render(content)
-				}
+		}
+		header := fmt.Sprintf("%s %s:", timeStr, roleStr)
+		allLines = append(allLines, header)
+
+		// Wrap and add content lines
+		contentLines := strings.Split(content, "\n")
+		for _, contentLine := range contentLines {
+			if role == "user" {
+				contentLine = userMessageStyle.Render(contentLine)
 			} else {
-				contentStyled = assistantMessageStyle.Render(content)
+				contentLine = assistantMessageStyle.Render(contentLine)
 			}
+			wrapped := wrapText(contentLine, contentWidth)
+			allLines = append(allLines, wrapped...)
 		}
 
-		// Create formatted message with minimal spacing
-		// Trim glamour's extra newlines
-		contentStyled = strings.TrimRight(contentStyled, "\n")
-		msg := fmt.Sprintf("%s %s:\n%s", timeStr, roleStr, contentStyled)
-		messages = append(messages, msg)
+		// Add visual separator between messages
+		allLines = append(allLines, "")
+		allLines = append(allLines, "─────────────────")
+		allLines = append(allLines, "")
 	}
 
-	m.detailMessages = messages
+	// Store lines
+	oldLineCount := m.detailLineCount
+	m.detailLines = allLines
+	m.detailLineCount = len(allLines)
 
-	// Start at the first message (which is now the newest)
-	m.detailScroll = 0
+	// Implement smart scroll:
+	// - If at top (viewing newest, position <= 10), stay at top
+	// - If scrolled away, try to preserve relative position
+	wasAtTop := m.detailViewportTop <= 10
+
+	if wasAtTop {
+		// Stay at top to see newest messages (tail -f behavior)
+		m.detailViewportTop = 0
+	} else if oldLineCount > 0 && m.detailLineCount > oldLineCount {
+		// New lines added: keep same offset from old end
+		// This preserves position when viewing history
+		offset := oldLineCount - m.detailViewportTop
+		m.detailViewportTop = max(0, m.detailLineCount - offset)
+	}
+
+	// Always clamp to valid range
+	maxScroll := max(0, m.detailLineCount-m.detailViewHeight)
+	m.detailViewportTop = min(m.detailViewportTop, maxScroll)
 }

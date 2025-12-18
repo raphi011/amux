@@ -29,8 +29,11 @@ type JSONLEntry struct {
 
 // ContentItem represents an item in the content array
 type ContentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // GetContentText extracts text from the Content field (handles both string and array)
@@ -45,9 +48,17 @@ func (e *JSONLEntry) GetContentText() string {
 	var items []ContentItem
 	if err := json.Unmarshal(e.Message.Content, &items); err == nil {
 		var text string
-		for _, item := range items {
+		for i, item := range items {
 			if item.Type == "text" && item.Text != "" {
+				if i > 0 {
+					text += "\n"
+				}
 				text += item.Text
+			} else if item.Type == "tool_use" {
+				if i > 0 {
+					text += "\n"
+				}
+				text += "[Tool: " + item.Name + "]"
 			}
 		}
 		return text

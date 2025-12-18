@@ -2,11 +2,18 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/raphaelgruber/amux/internal/agent"
 )
+
+// stripAnsi removes ANSI escape codes from a string for length calculation
+func stripAnsi(str string) string {
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	return ansiRegex.ReplaceAllString(str, "")
+}
 
 // View renders the UI
 func (m Model) View() string {
@@ -17,15 +24,37 @@ func (m Model) View() string {
 	var s strings.Builder
 
 	// Render title bar spanning full width
-	titleText := agentNameStyle.Render("amux")
-	titleText += agentIDStyle.Render("  sessions")
-	titleText += agentIDStyle.Render(" • ")
-	titleText += agentIDStyle.Render("kill")
-	s.WriteString(titleText)
+	leftText := agentNameStyle.Render("amux")
+	leftText += agentIDStyle.Render("  [r]efresh • [x] kill • [q]uit • [1-9] jump • [↑↓/b/f/home/end/g/G] scroll")
+
+	// Calculate total tokens across all agents
+	totalTokens := 0
+	for _, ag := range m.agents {
+		totalTokens += ag.TokensUsed
+	}
+
+	// Build right-aligned token count
+	rightText := ""
+	if totalTokens > 0 {
+		rightText = agentIDStyle.Render(fmt.Sprintf("󰀘 %s total", agent.FormatTokenCount(totalTokens)))
+	}
+
+	// Calculate padding to right-align the token count
+	// Strip ANSI codes to get actual text length
+	leftLen := len(stripAnsi(leftText))
+	rightLen := len(stripAnsi(rightText))
+	padding := m.width - leftLen - rightLen
+	if padding < 2 {
+		padding = 2 // Minimum spacing
+	}
+
+	s.WriteString(leftText)
+	s.WriteString(strings.Repeat(" ", padding))
+	s.WriteString(rightText)
 	s.WriteString("\n\n")
 
-	// Calculate column widths (20% for list, 80% for detail)
-	listWidth := m.width * 20 / 100
+	// Calculate column widths (30% for list, 70% for detail)
+	listWidth := m.width * 30 / 100
 	detailWidth := m.width - listWidth - 1 // -1 for separator
 
 	// Render left column (agent list - without title)
@@ -89,16 +118,19 @@ func (m Model) renderAgentList(width int) string {
 		s.WriteString("\n")
 
 		// Second line with details
-		details := fmt.Sprintf("     %s  󰀘 %s",
-			ag.GitBranch,
-			agent.FormatTokenCount(ag.TokensUsed))
-
-		if ag.GitBranch == "" {
-			details = fmt.Sprintf("     󰀘 %s", agent.FormatTokenCount(ag.TokensUsed))
+		var details string
+		if ag.GitBranch != "" {
+			details = fmt.Sprintf("     %s  󰀘 %s",
+				ag.GitBranch,
+				agent.FormatTokenCount(ag.TokensUsed))
+		} else {
+			details = fmt.Sprintf("     no git  󰀘 %s",
+				agent.FormatTokenCount(ag.TokensUsed))
 		}
 
 		s.WriteString(agentIDStyle.Render(details))
 		s.WriteString("\n")
+		s.WriteString("\n") // Add blank line between items for more spacing
 	}
 
 	return s.String()
