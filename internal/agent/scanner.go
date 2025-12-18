@@ -129,6 +129,13 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 		projectName = lastEntry.CWD
 	}
 
+	// Try to find the session JSONL file (contains full conversation)
+	sessionJSONLPath := filepath.Join(filepath.Dir(filePath), lastEntry.SessionID+".jsonl")
+	jsonlToUse := filePath
+	if _, err := os.Stat(sessionJSONLPath); err == nil {
+		jsonlToUse = sessionJSONLPath
+	}
+
 	agent := &Agent{
 		ID:          agentID,
 		Slug:        lastEntry.Slug,
@@ -141,7 +148,7 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 		TaskStatus:  "unknown",
 		TokensUsed:  totalInput + totalOutput,
 		TokensInput: totalInput,
-		JSONLPath:   filePath,
+		JSONLPath:   jsonlToUse,
 	}
 
 	return agent, nil

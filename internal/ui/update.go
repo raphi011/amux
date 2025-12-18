@@ -173,10 +173,10 @@ func (m *Model) loadDetailMessages() {
 	// Format each message
 	messages := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		// Format role and content
+		// Skip messages without a role (system messages)
 		role := entry.Message.Role
 		if role == "" {
-			role = "unknown"
+			continue
 		}
 
 		// Extract text content
@@ -187,8 +187,9 @@ func (m *Model) loadDetailMessages() {
 			}
 		}
 
+		// Skip messages with no text content
 		if content == "" {
-			content = "(no text content)"
+			continue
 		}
 
 		// Format timestamp
