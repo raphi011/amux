@@ -70,28 +70,25 @@ func ScanAgents() ([]Agent, error) {
 		}
 	}
 
-	// For each project, take N most recent agents where N = process count
+	// For each project, take the most recent agent
 	agents := make([]Agent, 0)
-	for dir, count := range runningDirs {
+	for dir := range runningDirs {
 		projectAgents := agentsByProject[dir]
+
+		if len(projectAgents) == 0 {
+			continue
+		}
 
 		// Sort by last active time (newest first)
 		sort.Slice(projectAgents, func(i, j int) bool {
 			return projectAgents[i].LastActive.After(projectAgents[j].LastActive)
 		})
 
-		// Take the N most recent agents
-		takeCount := count
-		if takeCount > len(projectAgents) {
-			takeCount = len(projectAgents)
-		}
-
-		for i := 0; i < takeCount; i++ {
-			agent := projectAgents[i]
-			loadTodoInfo(agent)
-			agent.IsActive = true
-			agents = append(agents, *agent)
-		}
+		// Take only the most recent agent
+		agent := projectAgents[0]
+		loadTodoInfo(agent)
+		agent.IsActive = true
+		agents = append(agents, *agent)
 	}
 
 	// Sort agents: active first, then by last active time
