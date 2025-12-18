@@ -60,79 +60,47 @@ func (m Model) View() string {
 func (m Model) renderAgentList(width int) string {
 	var s strings.Builder
 
-	// Loading state (but still show agents if we have them)
-	if m.loading && len(m.agents) == 0 {
-		s.WriteString(loadingStyle.Render("Loading agents..."))
-		s.WriteString("\n")
-		return s.String()
-	}
-
-	// Error state
-	if m.err != nil {
-		s.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
-		s.WriteString("\n")
-		return s.String()
-	}
-
 	// No agents
 	if len(m.agents) == 0 {
-		s.WriteString(loadingStyle.Render("No running Claude Code processes detected"))
-		s.WriteString("\n")
-		s.WriteString(agentIDStyle.Render("  (showing all sessions when Claude is running)"))
-		s.WriteString("\n")
-		s.WriteString("\n")
-		s.WriteString(helpBarStyle.Render("[r] Refresh  [q] Quit"))
+		if m.loading {
+			s.WriteString("Loading...")
+		} else {
+			s.WriteString("No active sessions")
+		}
 		s.WriteString("\n")
 		return s.String()
 	}
 
-	// Render all agents (no viewport scrolling - simpler, always show all)
-	for i := 0; i < len(m.agents); i++ {
-		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor, i))
+	// Render all agents - simple list
+	for i, ag := range m.agents {
+		cursor := " " // no cursor
+		if m.cursor == i {
+			cursor = ">" // cursor!
+		}
+
+		// Line format: "> 1. project-name"
+		line := fmt.Sprintf("%s %d. %s", cursor, i+1, ag.ProjectName)
+
+		if m.cursor == i {
+			s.WriteString(selectedRowStyle.Render(line))
+		} else {
+			s.WriteString(line)
+		}
+		s.WriteString("\n")
+
+		// Second line with details
+		details := fmt.Sprintf("     %s  󰀘 %s",
+			ag.GitBranch,
+			agent.FormatTokenCount(ag.TokensUsed))
+
+		if ag.GitBranch == "" {
+			details = fmt.Sprintf("     󰀘 %s", agent.FormatTokenCount(ag.TokensUsed))
+		}
+
+		s.WriteString(agentIDStyle.Render(details))
+		s.WriteString("\n")
 	}
 
-	return s.String()
-}
-
-// renderAgent renders a single agent row (two-line format with icons)
-func (m Model) renderAgent(ag agent.Agent, selected bool, index int) string {
-	var s strings.Builder
-
-	// First line: Number + Project name
-	numStr := fmt.Sprintf("%2d. ", index+1)
-	if selected {
-		s.WriteString(agentNameStyle.Render(numStr))
-	} else {
-		s.WriteString(agentIDStyle.Render(numStr))
-	}
-
-	projectName := ag.ProjectName
-	if len(projectName) > 40 {
-		projectName = projectName[:37] + "..."
-	}
-	if selected {
-		s.WriteString(selectedRowStyle.Render(projectName))
-	} else {
-		s.WriteString(projectName)
-	}
-	s.WriteString("\n")
-
-	// Second line: Branch + Tokens (indented to align with project name)
-	s.WriteString("    ") // Indent to align after number
-
-	// Git branch with nerd font icon
-	if ag.GitBranch != "" {
-		s.WriteString(agentIDStyle.Render(" "))
-		s.WriteString(projectStyle.Render(ag.GitBranch))
-	} else {
-		s.WriteString(agentIDStyle.Render(" (no branch)"))
-	}
-
-	// Tokens with nerd font icon
-	s.WriteString(agentIDStyle.Render("  󰀘 "))
-	s.WriteString(agentIDStyle.Render(agent.FormatTokenCount(ag.TokensUsed)))
-
-	s.WriteString("\n")
 	return s.String()
 }
 
