@@ -54,7 +54,13 @@ func (m Model) View() string {
 	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
 	s.WriteString("\n")
 
-	helpText := "[↑↓/jk] Navigate  [g/G] Top/Bottom  [r] Refresh  [x] Kill  [q] Quit"
+	helpText := "[↑↓/jk] Navigate  [g/G] Top/Bottom  [r] Refresh  [a] Auto-refresh: "
+	if m.autoRefresh {
+		helpText += "ON"
+	} else {
+		helpText += "OFF"
+	}
+	helpText += "  [q] Quit"
 	if m.loading {
 		helpText += "  " + loadingStyle.Render("⟳ Refreshing...")
 	}

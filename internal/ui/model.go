@@ -9,11 +9,12 @@ import (
 
 // Model represents the Bubbletea application model
 type Model struct {
-	agents     []agent.Agent
-	cursor     int
-	lastUpdate time.Time
-	err        error
-	loading    bool
+	agents      []agent.Agent
+	cursor      int
+	lastUpdate  time.Time
+	err         error
+	loading     bool
+	autoRefresh bool
 }
 
 // tickMsg is sent on every auto-refresh tick
@@ -28,10 +29,11 @@ type agentsLoadedMsg struct {
 // NewModel creates a new Model instance
 func NewModel() Model {
 	return Model{
-		agents:     []agent.Agent{},
-		cursor:     0,
-		lastUpdate: time.Now(),
-		loading:    true,
+		agents:      []agent.Agent{},
+		cursor:      0,
+		lastUpdate:  time.Now(),
+		loading:     true,
+		autoRefresh: false, // Start with auto-refresh disabled
 	}
 }
 
@@ -51,9 +53,9 @@ func loadAgentsCmd() tea.Cmd {
 	}
 }
 
-// tickCmd returns a command that sends a tick message every 2 seconds
+// tickCmd returns a command that sends a tick message every 10 seconds
 func tickCmd() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }

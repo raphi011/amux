@@ -28,12 +28,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Auto-refresh: reload agents (only if not currently loading)
-		if !m.loading {
+		// Auto-refresh: reload agents (only if enabled and not currently loading)
+		if m.autoRefresh && !m.loading {
 			m.loading = true
 			return m, tea.Batch(loadAgentsCmd(), tickCmd())
 		}
-		// If already loading, just schedule next tick
+		// Schedule next tick
 		return m, tickCmd()
 
 	case tea.WindowSizeMsg:
@@ -88,6 +88,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.agents) > 0 {
 			m.cursor = len(m.agents) - 1
 		}
+
+	case "a":
+		// Toggle auto-refresh
+		m.autoRefresh = !m.autoRefresh
 
 	case "x", "delete":
 		// Kill agent (placeholder for future implementation)
