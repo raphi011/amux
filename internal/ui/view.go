@@ -14,8 +14,8 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	// Calculate column widths (25% for list, 75% for detail)
-	listWidth := m.width * 25 / 100
+	// Calculate column widths (20% for list, 80% for detail)
+	listWidth := m.width * 20 / 100
 	detailWidth := m.width - listWidth - 1 // -1 for separator
 
 	// Render left column (agent list)
