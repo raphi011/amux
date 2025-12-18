@@ -55,7 +55,7 @@ func ScanAgents() ([]Agent, error) {
 		}
 	}
 
-	// Convert map to slice
+	// Convert map to slice, filtering for active agents only
 	agents := make([]Agent, 0, len(agentMap))
 	for _, agent := range agentMap {
 		// Load todo information
@@ -64,7 +64,10 @@ func ScanAgents() ([]Agent, error) {
 		// Check if agent is active
 		agent.IsActive = agent.IsRecentlyActive()
 
-		agents = append(agents, *agent)
+		// Only include active agents
+		if agent.IsActive {
+			agents = append(agents, *agent)
+		}
 	}
 
 	// Sort agents: active first, then by last active time
