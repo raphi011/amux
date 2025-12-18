@@ -107,17 +107,22 @@ func (m Model) renderAgentList(width int) string {
 	s.WriteString("\n")
 
 	// Second row
-	helpLine2 := "[r] Refresh [a] Auto: "
-	if m.autoRefresh {
-		helpLine2 += "ON"
-	} else {
-		helpLine2 += "OFF"
-	}
-	helpLine2 += " [q] Quit"
-	if m.loading {
-		helpLine2 += " " + loadingStyle.Render("⟳")
-	}
+	helpLine2 := "[r] Refresh [x] Kill"
 	s.WriteString(helpBarStyle.Render(helpLine2))
+	s.WriteString("\n")
+
+	// Third row
+	helpLine3 := "[a] Auto: "
+	if m.autoRefresh {
+		helpLine3 += "ON"
+	} else {
+		helpLine3 += "OFF"
+	}
+	helpLine3 += " [q] Quit"
+	if m.loading {
+		helpLine3 += " " + loadingStyle.Render("⟳")
+	}
+	s.WriteString(helpBarStyle.Render(helpLine3))
 	s.WriteString("\n")
 
 	return s.String()

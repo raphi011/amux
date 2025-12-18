@@ -139,9 +139,16 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailScroll++
 		}
 
-	case "x", "delete":
-		// Kill agent (placeholder for future implementation)
-		// TODO: Implement agent killing functionality
+	case "x", "X":
+		// Kill the selected Claude Code process
+		if len(m.agents) > 0 && m.cursor < len(m.agents) {
+			agent := m.agents[m.cursor]
+			// Kill all Claude processes in this agent's project directory
+			_ = claude.KillClaudeProcessesInDir(agent.ProjectPath)
+			// Refresh the agent list after killing
+			m.loading = true
+			return m, loadAgentsCmd()
+		}
 		return m, nil
 	}
 
