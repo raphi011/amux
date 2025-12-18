@@ -94,38 +94,46 @@ func (m Model) renderAgentList(width int) string {
 	return s.String()
 }
 
-// renderAgent renders a single agent row (single line, circumflex-style)
+// renderAgent renders a single agent row (two-line format with icons)
 func (m Model) renderAgent(ag agent.Agent, selected bool, index int) string {
-	var line strings.Builder
+	var s strings.Builder
 
-	// Number with padding
+	// First line: Number + Project name
 	numStr := fmt.Sprintf("%2d. ", index+1)
 	if selected {
-		line.WriteString(agentNameStyle.Render(numStr))
+		s.WriteString(agentNameStyle.Render(numStr))
 	} else {
-		line.WriteString(agentIDStyle.Render(numStr))
+		s.WriteString(agentIDStyle.Render(numStr))
 	}
 
-	// Project name
 	projectName := ag.ProjectName
-	if len(projectName) > 30 {
-		projectName = projectName[:27] + "..."
+	if len(projectName) > 40 {
+		projectName = projectName[:37] + "..."
 	}
 	if selected {
-		line.WriteString(selectedRowStyle.Render(projectName))
+		s.WriteString(selectedRowStyle.Render(projectName))
 	} else {
-		line.WriteString(projectName)
+		s.WriteString(projectName)
 	}
+	s.WriteString("\n")
 
-	// Branch if available
+	// Second line: Branch + Tokens (indented to align with project name)
+	s.WriteString("    ") // Indent to align after number
+
+	// Git branch with nerd font icon
 	if ag.GitBranch != "" {
-		line.WriteString(agentIDStyle.Render(" ("))
-		line.WriteString(projectStyle.Render(ag.GitBranch))
-		line.WriteString(agentIDStyle.Render(")"))
+		s.WriteString(agentIDStyle.Render(" "))
+		s.WriteString(projectStyle.Render(ag.GitBranch))
+	} else {
+		s.WriteString(agentIDStyle.Render(" (no branch)"))
 	}
 
-	line.WriteString("\n")
-	return line.String()
+	// Tokens with nerd font icon
+	s.WriteString(agentIDStyle.Render("  󰀘 "))
+	s.WriteString(agentIDStyle.Render(agent.FormatTokenCount(ag.TokensUsed)))
+
+	s.WriteString("\n")
+	return s.String()
 }
 
 // shortenPath shortens a path by replacing the home directory with ~
