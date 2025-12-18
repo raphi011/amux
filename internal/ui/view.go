@@ -33,9 +33,9 @@ func (m Model) View() string {
 
 	// No agents
 	if len(m.agents) == 0 {
-		s.WriteString(loadingStyle.Render("No running Claude Code sessions detected"))
+		s.WriteString(loadingStyle.Render("No running Claude Code processes detected"))
 		s.WriteString("\n")
-		s.WriteString(agentIDStyle.Render("  (showing only sessions with activity in last 15 minutes)"))
+		s.WriteString(agentIDStyle.Render("  (showing all sessions when Claude is running)"))
 		s.WriteString("\n")
 		s.WriteString("\n")
 		s.WriteString(helpBarStyle.Render("[r] Refresh  [q] Quit"))
