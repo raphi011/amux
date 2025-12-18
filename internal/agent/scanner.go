@@ -85,10 +85,16 @@ func ScanAgents() ([]Agent, error) {
 
 // parseAgentFromJSONL extracts agent information from a JSONL file
 func parseAgentFromJSONL(filePath string) (*Agent, error) {
-	lastEntry, err := claude.GetLastEntry(filePath)
-	if err != nil || lastEntry == nil {
+	// Parse all entries to get token totals
+	entries, err := claude.ParseJSONL(filePath)
+	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
+
+	lastEntry := &entries[len(entries)-1]
+
+	// Calculate total tokens used
+	totalInput, totalOutput := claude.CalculateTotalTokens(entries)
 
 	// Extract agent ID from filename
 	filename := filepath.Base(filePath)
@@ -103,6 +109,8 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 		LastActive:  lastEntry.Timestamp,
 		CurrentTask: "Loading...",
 		TaskStatus:  "unknown",
+		TokensUsed:  totalInput + totalOutput,
+		TokensInput: totalInput,
 	}
 
 	return agent, nil

@@ -12,6 +12,8 @@ type Agent struct {
 	CurrentTask string    // Current task from todo file
 	TaskStatus  string    // "pending", "in_progress", "completed", or "unknown"
 	IsActive    bool      // Active within last 5 minutes
+	TokensUsed  int       // Total tokens used (input + output)
+	TokensInput int       // Input tokens
 }
 
 // IsRecentlyActive checks if the agent was active in the last 5 minutes
@@ -76,4 +78,22 @@ func intToString(n int) string {
 		n /= 10
 	}
 	return string(result)
+}
+
+// FormatTokenCount returns a human-readable token count with commas
+func FormatTokenCount(n int) string {
+	if n < 1000 {
+		return intToString(n)
+	}
+	if n < 1000000 {
+		return intToString(n/1000) + "," + padLeft(intToString(n%1000), 3)
+	}
+	return intToString(n/1000000) + "," + padLeft(intToString((n%1000000)/1000), 3) + "," + padLeft(intToString(n%1000), 3)
+}
+
+func padLeft(s string, length int) string {
+	for len(s) < length {
+		s = "0" + s
+	}
+	return s
 }

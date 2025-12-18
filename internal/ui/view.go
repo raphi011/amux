@@ -149,6 +149,15 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Last active: "))
 	content.WriteString(timeAgoStyle.Render(ag.TimeSinceActive()))
+	content.WriteString("\n")
+
+	// Fifth line: token usage
+	content.WriteString("    ")
+	content.WriteString(agentIDStyle.Render("Tokens: "))
+	content.WriteString(projectStyle.Render(agent.FormatTokenCount(ag.TokensUsed)))
+	content.WriteString(agentIDStyle.Render(" (input: "))
+	content.WriteString(projectStyle.Render(agent.FormatTokenCount(ag.TokensInput)))
+	content.WriteString(agentIDStyle.Render(")"))
 
 	// Apply selection style if selected
 	if selected {
