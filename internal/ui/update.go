@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/glamour"
@@ -222,8 +223,10 @@ func (m *Model) loadDetailMessages() {
 			}
 		}
 
-		// Create formatted message
-		msg := fmt.Sprintf("%s %s:\n%s\n", timeStr, roleStr, contentStyled)
+		// Create formatted message with minimal spacing
+		// Trim glamour's extra newlines
+		contentStyled = strings.TrimRight(contentStyled, "\n")
+		msg := fmt.Sprintf("%s %s:\n%s", timeStr, roleStr, contentStyled)
 		messages = append(messages, msg)
 	}
 

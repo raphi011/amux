@@ -53,6 +53,12 @@ func (m Model) renderDetailView(width int) string {
 					linesShown++
 				}
 			}
+
+			// Add separator between messages
+			if i < len(m.detailMessages)-1 && linesShown < availableHeight {
+				s.WriteString("\n")
+				linesShown++
+			}
 		}
 	}
 
