@@ -8,7 +8,7 @@ import (
 // GetRunningClaudeWorkingDirs returns working directories and count of processes in each
 func GetRunningClaudeWorkingDirs() (map[string]int, error) {
 	// Get PIDs of running Claude processes
-	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v claude-manager | awk '{print $2}'")
+	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v amux | awk '{print $2}'")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -49,7 +49,7 @@ func GetRunningClaudeWorkingDirs() (map[string]int, error) {
 // KillClaudeProcessesInDir kills all Claude processes running in the specified directory
 func KillClaudeProcessesInDir(dir string) error {
 	// Get PIDs of running Claude processes
-	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v claude-manager | awk '{print $2}'")
+	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v amux | awk '{print $2}'")
 	output, err := cmd.Output()
 	if err != nil {
 		return err

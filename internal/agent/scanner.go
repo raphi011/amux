@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/raphaelgruber/claude-manager/internal/claude"
+	"github.com/raphaelgruber/amux/internal/claude"
 )
 
 // ScanAgents scans for all Claude Code agents and returns their information

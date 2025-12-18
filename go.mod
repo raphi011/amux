@@ -1,4 +1,4 @@
-module github.com/raphaelgruber/claude-manager
+module github.com/raphaelgruber/amux
 
 go 1.25.5
 

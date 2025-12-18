@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/raphaelgruber/claude-manager/internal/agent"
+	"github.com/raphaelgruber/amux/internal/agent"
 )
 
 // View renders the UI
@@ -37,11 +37,13 @@ func (m Model) View() string {
 func (m Model) renderAgentList(width int) string {
 	var s strings.Builder
 
-	// Title
-	title := titleStyle.Render("Running Sessions")
-	s.WriteString(title)
+	// Title bar (circumflex-style)
+	titleText := agentNameStyle.Render("amux")
+	titleText += agentIDStyle.Render("  sessions")
+	titleText += agentIDStyle.Render(" • ")
+	titleText += agentIDStyle.Render("kill")
+	s.WriteString(titleText)
 	s.WriteString("\n")
-	s.WriteString(separatorStyle.Render(strings.Repeat("─", width-2)))
 	s.WriteString("\n")
 
 	// Loading state (but still show agents if we have them)
@@ -83,111 +85,52 @@ func (m Model) renderAgentList(width int) string {
 
 	// Render visible agents only
 	for i := m.viewportTop; i < viewportEnd; i++ {
-		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor))
-		if i < viewportEnd-1 {
-			s.WriteString("\n")
-		}
+		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor, i))
 	}
 
 	// Show scroll indicator if there are more items below
 	if viewportEnd < len(m.agents) {
 		remaining := len(m.agents) - viewportEnd
-		s.WriteString("\n\n")
-		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ↓ %d more below...", remaining)))
+		s.WriteString("\n")
+		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ... %d more", remaining)))
+		s.WriteString("\n")
 	}
-
-	// Help bar (two rows)
-	s.WriteString("\n")
-	s.WriteString(separatorStyle.Render(strings.Repeat("─", width-2)))
-	s.WriteString("\n")
-
-	// First row
-	helpLine1 := "[↑↓/jk] [g/G] [←→/hl]"
-	s.WriteString(helpBarStyle.Render(helpLine1))
-	s.WriteString("\n")
-
-	// Second row
-	helpLine2 := "[r] Refresh [x] Kill"
-	s.WriteString(helpBarStyle.Render(helpLine2))
-	s.WriteString("\n")
-
-	// Third row
-	helpLine3 := "[a] Auto: "
-	if m.autoRefresh {
-		helpLine3 += "ON"
-	} else {
-		helpLine3 += "OFF"
-	}
-	helpLine3 += " [q] Quit"
-	if m.loading {
-		helpLine3 += " " + loadingStyle.Render("⟳")
-	}
-	s.WriteString(helpBarStyle.Render(helpLine3))
-	s.WriteString("\n")
 
 	return s.String()
 }
 
-// renderAgent renders a single agent row
-func (m Model) renderAgent(ag agent.Agent, selected bool) string {
-	var s strings.Builder
+// renderAgent renders a single agent row (single line, circumflex-style)
+func (m Model) renderAgent(ag agent.Agent, selected bool, index int) string {
+	var line strings.Builder
 
-	// Build the content
-	var content strings.Builder
-
-	// Add cursor indicator for selected row
+	// Number with padding
+	numStr := fmt.Sprintf("%2d. ", index+1)
 	if selected {
-		content.WriteString("> ")
+		line.WriteString(agentNameStyle.Render(numStr))
 	} else {
-		content.WriteString("  ")
+		line.WriteString(agentIDStyle.Render(numStr))
 	}
 
-	// First line: indicator and folder name
-	if ag.IsActive {
-		content.WriteString(activeIndicator.Render())
+	// Project name
+	projectName := ag.ProjectName
+	if len(projectName) > 30 {
+		projectName = projectName[:27] + "..."
+	}
+	if selected {
+		line.WriteString(selectedRowStyle.Render(projectName))
 	} else {
-		content.WriteString(inactiveIndicator.Render())
+		line.WriteString(projectName)
 	}
-	content.WriteString(" ")
 
-	// Show project folder name
-	content.WriteString(agentNameStyle.Render(ag.ProjectName))
-
-	if !ag.IsActive {
-		content.WriteString(" ")
-		content.WriteString(agentIDStyle.Render("[INACTIVE]"))
-	}
-	content.WriteString("\n")
-
-	// Second line: git branch
-	content.WriteString("    ")
+	// Branch if available
 	if ag.GitBranch != "" {
-		content.WriteString(agentIDStyle.Render("Branch: "))
-		content.WriteString(projectStyle.Render(ag.GitBranch))
-	} else {
-		content.WriteString(agentIDStyle.Render("Branch: "))
-		content.WriteString(agentIDStyle.Render("(no branch)"))
-	}
-	content.WriteString("\n")
-
-	// Third line: token usage
-	content.WriteString("    ")
-	content.WriteString(agentIDStyle.Render("Tokens: "))
-	content.WriteString(projectStyle.Render(agent.FormatTokenCount(ag.TokensUsed)))
-	content.WriteString(agentIDStyle.Render(" (input: "))
-	content.WriteString(projectStyle.Render(agent.FormatTokenCount(ag.TokensInput)))
-	content.WriteString(agentIDStyle.Render(")"))
-
-	// Apply selection style if selected
-	if selected {
-		s.WriteString(selectedRowStyle.Render(content.String()))
-	} else {
-		s.WriteString(content.String())
+		line.WriteString(agentIDStyle.Render(" ("))
+		line.WriteString(projectStyle.Render(ag.GitBranch))
+		line.WriteString(agentIDStyle.Render(")"))
 	}
 
-	s.WriteString("\n")
-
-	return s.String()
+	line.WriteString("\n")
+	return line.String()
 }
 
 // shortenPath shortens a path by replacing the home directory with ~

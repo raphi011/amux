@@ -4,7 +4,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/raphaelgruber/claude-manager/internal/agent"
+	"github.com/raphaelgruber/amux/internal/agent"
 )
 
 // Model represents the Bubbletea application model

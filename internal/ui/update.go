@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/raphaelgruber/claude-manager/internal/claude"
+	"github.com/raphaelgruber/amux/internal/claude"
 )
 
 // Update handles incoming messages and updates the model
@@ -83,6 +83,23 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Don't process navigation if no agents
 	if len(m.agents) == 0 {
+		return m, nil
+	}
+
+	// Handle number keys for jumping to specific agent (1-9)
+	if len(msg.String()) == 1 && msg.String()[0] >= '1' && msg.String()[0] <= '9' {
+		num := int(msg.String()[0] - '0')
+		if num > 0 && num <= len(m.agents) {
+			m.cursor = num - 1
+			// Adjust viewport to show cursor
+			if m.cursor < m.viewportTop {
+				m.viewportTop = m.cursor
+			} else if m.cursor >= m.viewportTop+m.viewportSize {
+				m.viewportTop = m.cursor - m.viewportSize + 1
+			}
+			m.loadDetailMessages()
+			m.detailScroll = 0
+		}
 		return m, nil
 	}
 
