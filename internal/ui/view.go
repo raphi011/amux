@@ -17,8 +17,8 @@ func (m Model) View() string {
 	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
 	s.WriteString("\n\n")
 
-	// Loading state
-	if m.loading {
+	// Loading state (but still show agents if we have them)
+	if m.loading && len(m.agents) == 0 {
 		s.WriteString(loadingStyle.Render("Loading agents..."))
 		s.WriteString("\n")
 		return s.String()
@@ -53,7 +53,12 @@ func (m Model) View() string {
 	s.WriteString("\n")
 	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
 	s.WriteString("\n")
-	s.WriteString(helpBarStyle.Render("[↑↓/jk] Navigate  [g/G] Top/Bottom  [r] Refresh  [x] Kill  [q] Quit"))
+
+	helpText := "[↑↓/jk] Navigate  [g/G] Top/Bottom  [r] Refresh  [x] Kill  [q] Quit"
+	if m.loading {
+		helpText += "  " + loadingStyle.Render("⟳ Refreshing...")
+	}
+	s.WriteString(helpBarStyle.Render(helpText))
 	s.WriteString("\n")
 
 	return s.String()

@@ -51,18 +51,19 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Don't process other keys if loading
+	// Handle refresh regardless of loading state or agent count
+	if msg.String() == "r" {
+		m.loading = true
+		return m, loadAgentsCmd()
+	}
+
+	// Don't process navigation if loading
 	if m.loading {
 		return m, nil
 	}
 
 	// Don't process navigation if no agents
 	if len(m.agents) == 0 {
-		switch msg.String() {
-		case "r":
-			m.loading = true
-			return m, loadAgentsCmd()
-		}
 		return m, nil
 	}
 
@@ -87,11 +88,6 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.agents) > 0 {
 			m.cursor = len(m.agents) - 1
 		}
-
-	case "r":
-		// Manual refresh
-		m.loading = true
-		return m, loadAgentsCmd()
 
 	case "x", "delete":
 		// Kill agent (placeholder for future implementation)
