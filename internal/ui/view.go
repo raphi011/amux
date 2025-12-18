@@ -131,7 +131,7 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 		content.WriteString("  ")
 	}
 
-	// First line: indicator, name, and ID
+	// First line: indicator and folder name
 	if ag.IsActive {
 		content.WriteString(activeIndicator.Render())
 	} else {
@@ -139,18 +139,8 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	}
 	content.WriteString(" ")
 
-	// Use slug or fallback to ID if slug is empty
-	displayName := ag.Slug
-	if displayName == "" {
-		displayName = ag.ID
-	}
-	content.WriteString(agentNameStyle.Render(displayName))
-	content.WriteString(" ")
-
-	// Only show ID in parentheses if we're showing the slug
-	if ag.Slug != "" {
-		content.WriteString(agentIDStyle.Render(fmt.Sprintf("(%s)", ag.ID)))
-	}
+	// Show project folder name
+	content.WriteString(agentNameStyle.Render(ag.ProjectName))
 
 	if !ag.IsActive {
 		content.WriteString(" ")
@@ -158,14 +148,14 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	}
 	content.WriteString("\n")
 
-	// Second line: project name and git branch
+	// Second line: git branch
 	content.WriteString("    ")
-	content.WriteString(agentIDStyle.Render("Project: "))
-	content.WriteString(projectStyle.Render(ag.ProjectName))
 	if ag.GitBranch != "" {
-		content.WriteString(agentIDStyle.Render(" ["))
+		content.WriteString(agentIDStyle.Render("Branch: "))
 		content.WriteString(projectStyle.Render(ag.GitBranch))
-		content.WriteString(agentIDStyle.Render("]"))
+	} else {
+		content.WriteString(agentIDStyle.Render("Branch: "))
+		content.WriteString(agentIDStyle.Render("(no branch)"))
 	}
 	content.WriteString("\n")
 

@@ -12,11 +12,7 @@ func (m Model) renderDetailView(width int) string {
 	// Title showing selected agent
 	if len(m.agents) > 0 && m.cursor < len(m.agents) {
 		agent := m.agents[m.cursor]
-		displayName := agent.Slug
-		if displayName == "" {
-			displayName = agent.ID
-		}
-		title := titleStyle.Render(fmt.Sprintf("Messages: %s", displayName))
+		title := titleStyle.Render(fmt.Sprintf("Messages: %s", agent.ProjectName))
 		s.WriteString(title)
 	} else {
 		s.WriteString(titleStyle.Render("Messages"))

@@ -170,9 +170,11 @@ func (m *Model) loadDetailMessages() {
 		return
 	}
 
-	// Format each message
+	// Format each message (in reverse order - newest first)
 	messages := make([]string, 0, len(entries))
-	for _, entry := range entries {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+
 		// Skip messages without a role (system messages)
 		role := entry.Message.Role
 		if role == "" {
@@ -202,10 +204,6 @@ func (m *Model) loadDetailMessages() {
 
 	m.detailMessages = messages
 
-	// Start at the last message
-	if len(messages) > 0 {
-		m.detailScroll = len(messages) - 1
-	} else {
-		m.detailScroll = 0
-	}
+	// Start at the first message (which is now the newest)
+	m.detailScroll = 0
 }
