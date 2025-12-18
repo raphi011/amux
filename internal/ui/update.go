@@ -198,9 +198,9 @@ func (m *Model) loadDetailMessages() {
 	}
 
 	// Create markdown renderer once for all assistant messages
-	// Use notty style for more compact rendering
+	// Use dark style for proper markdown rendering
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylePath("notty"),
+		glamour.WithStylePath("dark"),
 		glamour.WithWordWrap(m.width*80/100),
 	)
 
