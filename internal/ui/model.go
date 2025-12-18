@@ -9,12 +9,14 @@ import (
 
 // Model represents the Bubbletea application model
 type Model struct {
-	agents      []agent.Agent
-	cursor      int
-	lastUpdate  time.Time
-	err         error
-	loading     bool
-	autoRefresh bool
+	agents       []agent.Agent
+	cursor       int
+	viewportTop  int // First visible item index
+	viewportSize int // Number of items that fit on screen
+	lastUpdate   time.Time
+	err          error
+	loading      bool
+	autoRefresh  bool
 }
 
 // tickMsg is sent on every auto-refresh tick
@@ -29,11 +31,13 @@ type agentsLoadedMsg struct {
 // NewModel creates a new Model instance
 func NewModel() Model {
 	return Model{
-		agents:      []agent.Agent{},
-		cursor:      0,
-		lastUpdate:  time.Now(),
-		loading:     true,
-		autoRefresh: false, // Start with auto-refresh disabled
+		agents:       []agent.Agent{},
+		cursor:       0,
+		viewportTop:  0,
+		viewportSize: 10, // Default, will be updated based on terminal size
+		lastUpdate:   time.Now(),
+		loading:      true,
+		autoRefresh:  false, // Start with auto-refresh disabled
 	}
 }
 

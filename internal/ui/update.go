@@ -37,6 +37,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.WindowSizeMsg:
+		// Calculate viewport size based on terminal height
+		// Reserve space for: title (3 lines) + separator (1) + help bar (2) = 6 lines
+		// Each agent takes ~5 lines (name + project + task + last active + blank)
+		m.viewportSize = (msg.Height - 6) / 5
+		if m.viewportSize < 1 {
+			m.viewportSize = 1
+		}
 		return m, nil
 	}
 
@@ -72,21 +79,32 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
+			// Scroll up if cursor moves above viewport
+			if m.cursor < m.viewportTop {
+				m.viewportTop = m.cursor
+			}
 		}
 
 	case "down", "j":
 		if m.cursor < len(m.agents)-1 {
 			m.cursor++
+			// Scroll down if cursor moves below viewport
+			if m.cursor >= m.viewportTop+m.viewportSize {
+				m.viewportTop = m.cursor - m.viewportSize + 1
+			}
 		}
 
 	case "g":
 		// Go to top
 		m.cursor = 0
+		m.viewportTop = 0
 
 	case "G":
 		// Go to bottom
 		if len(m.agents) > 0 {
 			m.cursor = len(m.agents) - 1
+			// Adjust viewport to show bottom
+			m.viewportTop = max(0, m.cursor-m.viewportSize+1)
 		}
 
 	case "a":
@@ -100,4 +118,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// max returns the larger of two integers
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

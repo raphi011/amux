@@ -41,12 +41,30 @@ func (m Model) View() string {
 		return s.String()
 	}
 
-	// Render agents
-	for i, ag := range m.agents {
-		s.WriteString(m.renderAgent(ag, i == m.cursor))
-		if i < len(m.agents)-1 {
+	// Calculate viewport bounds
+	viewportEnd := m.viewportTop + m.viewportSize
+	if viewportEnd > len(m.agents) {
+		viewportEnd = len(m.agents)
+	}
+
+	// Show scroll indicator if there are more items above
+	if m.viewportTop > 0 {
+		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ↑ %d more above...\n\n", m.viewportTop)))
+	}
+
+	// Render visible agents only
+	for i := m.viewportTop; i < viewportEnd; i++ {
+		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor))
+		if i < viewportEnd-1 {
 			s.WriteString("\n")
 		}
+	}
+
+	// Show scroll indicator if there are more items below
+	if viewportEnd < len(m.agents) {
+		remaining := len(m.agents) - viewportEnd
+		s.WriteString("\n\n")
+		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ↓ %d more below...", remaining)))
 	}
 
 	// Help bar
