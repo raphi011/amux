@@ -12,7 +12,7 @@ func (m Model) View() string {
 	var s strings.Builder
 
 	// Title
-	s.WriteString(titleStyle.Render("Claude Code Agent Manager - Active Sessions"))
+	s.WriteString(titleStyle.Render("Claude Code Agent Manager - Running Sessions"))
 	s.WriteString("\n")
 	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
 	s.WriteString("\n\n")
@@ -33,7 +33,9 @@ func (m Model) View() string {
 
 	// No agents
 	if len(m.agents) == 0 {
-		s.WriteString(loadingStyle.Render("No active agents (active in last 30 minutes)"))
+		s.WriteString(loadingStyle.Render("No running Claude Code sessions detected"))
+		s.WriteString("\n")
+		s.WriteString(agentIDStyle.Render("  (showing only sessions with activity in last 2 minutes)"))
 		s.WriteString("\n")
 		s.WriteString("\n")
 		s.WriteString(helpBarStyle.Render("[r] Refresh  [q] Quit"))

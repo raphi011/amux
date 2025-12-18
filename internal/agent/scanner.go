@@ -55,17 +55,19 @@ func ScanAgents() ([]Agent, error) {
 		}
 	}
 
-	// Convert map to slice, filtering for active agents only
+	// Check if there are any running Claude processes at all
+	hasRunningProcesses := claude.HasRunningClaudeSessions()
+
+	// Convert map to slice, filtering for actually running sessions only
 	agents := make([]Agent, 0, len(agentMap))
 	for _, agent := range agentMap {
 		// Load todo information
 		loadTodoInfo(agent)
 
-		// Check if agent is active
-		agent.IsActive = agent.IsRecentlyActive()
-
-		// Only include active agents
-		if agent.IsActive {
+		// If there are running Claude processes, include agents that were active in the last 2 minutes
+		// This gives us a reasonable window to detect active sessions
+		if hasRunningProcesses && agent.IsRecentlyActive() {
+			agent.IsActive = true
 			agents = append(agents, *agent)
 		}
 	}
