@@ -78,12 +78,7 @@ func (m Model) renderAgentList(width int) string {
 		viewportEnd = len(m.agents)
 	}
 
-	// Show scroll indicator if there are more items above
-	if m.viewportTop > 0 {
-		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ↑ %d more above...\n\n", m.viewportTop)))
-	}
-
-	// Render visible agents only
+	// Render visible agents only (no scroll indicator above - keeps title fixed)
 	for i := m.viewportTop; i < viewportEnd; i++ {
 		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor, i))
 	}

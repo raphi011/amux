@@ -49,10 +49,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Calculate viewport size based on terminal height
-		// Reserve space for: title (2 lines) + blank line + detail header (3 lines) = 5 lines
+		// Calculate viewport size based on terminal height for the list column
+		// In split view: left column is 20% of width
+		// Reserve space for: title bar (3 lines) in left column
 		// Each agent takes 1 line now (simple single-line display)
-		m.viewportSize = msg.Height - 5
+		m.viewportSize = msg.Height - 4 // Reserve 4 lines for title bar + spacing
 		if m.viewportSize < 1 {
 			m.viewportSize = 1
 		}
