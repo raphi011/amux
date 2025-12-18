@@ -50,9 +50,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		// Calculate viewport size based on terminal height
-		// Reserve space for: title (3 lines) + separator (1) + help bar (2) = 6 lines
-		// Each agent takes ~6 lines (name + project + task + last active + tokens + blank)
-		m.viewportSize = (msg.Height - 6) / 6
+		// Reserve space for: title (2 lines) + blank line + detail header (3 lines) = 5 lines
+		// Each agent takes 1 line now (simple single-line display)
+		m.viewportSize = msg.Height - 5
 		if m.viewportSize < 1 {
 			m.viewportSize = 1
 		}
