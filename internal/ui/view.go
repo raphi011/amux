@@ -72,23 +72,9 @@ func (m Model) renderAgentList(width int) string {
 		return s.String()
 	}
 
-	// Calculate viewport bounds
-	viewportEnd := m.viewportTop + m.viewportSize
-	if viewportEnd > len(m.agents) {
-		viewportEnd = len(m.agents)
-	}
-
-	// Render visible agents only (no scroll indicator above - keeps title fixed)
-	for i := m.viewportTop; i < viewportEnd; i++ {
+	// Render all agents (no viewport scrolling - simpler, always show all)
+	for i := 0; i < len(m.agents); i++ {
 		s.WriteString(m.renderAgent(m.agents[i], i == m.cursor, i))
-	}
-
-	// Show scroll indicator if there are more items below
-	if viewportEnd < len(m.agents) {
-		remaining := len(m.agents) - viewportEnd
-		s.WriteString("\n")
-		s.WriteString(agentIDStyle.Render(fmt.Sprintf("  ... %d more", remaining)))
-		s.WriteString("\n")
 	}
 
 	return s.String()
