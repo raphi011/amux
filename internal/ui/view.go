@@ -71,6 +71,13 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	// Build the content
 	var content strings.Builder
 
+	// Add cursor indicator for selected row
+	if selected {
+		content.WriteString("> ")
+	} else {
+		content.WriteString("  ")
+	}
+
 	// First line: indicator, name, and ID
 	if ag.IsActive {
 		content.WriteString(activeIndicator.Render())
@@ -99,13 +106,13 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	content.WriteString("\n")
 
 	// Second line: project path
-	content.WriteString("  ")
+	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Project: "))
 	content.WriteString(projectStyle.Render(shortenPath(ag.ProjectPath)))
 	content.WriteString("\n")
 
 	// Third line: current task
-	content.WriteString("  ")
+	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Task: "))
 	content.WriteString(GetTaskStatusStyle(ag.TaskStatus).Render())
 	content.WriteString(" ")
@@ -113,7 +120,7 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	content.WriteString("\n")
 
 	// Fourth line: last active
-	content.WriteString("  ")
+	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Last active: "))
 	content.WriteString(timeAgoStyle.Render(ag.TimeSinceActive()))
 

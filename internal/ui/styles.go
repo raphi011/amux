@@ -78,7 +78,8 @@ var (
 
 	// Selected row style
 	selectedRowStyle = lipgloss.NewStyle().
-				Background(colorBgLight)
+				Background(colorBgLight).
+				Bold(true)
 
 	// Help bar style
 	helpBarStyle = lipgloss.NewStyle().
