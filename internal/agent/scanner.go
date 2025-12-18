@@ -123,11 +123,19 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 	agentID := strings.TrimPrefix(filename, "agent-")
 	agentID = strings.TrimSuffix(agentID, ".jsonl")
 
+	// Extract project name (last directory name)
+	projectName := filepath.Base(lastEntry.CWD)
+	if projectName == "" || projectName == "." {
+		projectName = lastEntry.CWD
+	}
+
 	agent := &Agent{
 		ID:          agentID,
 		Slug:        lastEntry.Slug,
 		SessionID:   lastEntry.SessionID,
 		ProjectPath: lastEntry.CWD,
+		ProjectName: projectName,
+		GitBranch:   lastEntry.GitBranch,
 		LastActive:  lastEntry.Timestamp,
 		CurrentTask: "Loading...",
 		TaskStatus:  "unknown",

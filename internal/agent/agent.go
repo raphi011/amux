@@ -8,6 +8,8 @@ type Agent struct {
 	Slug        string    // Human-readable slug (e.g., "typed-doodling-meerkat")
 	SessionID   string    // Session UUID
 	ProjectPath string    // Working directory
+	ProjectName string    // Just the folder name
+	GitBranch   string    // Current git branch
 	LastActive  time.Time // Last message timestamp
 	CurrentTask string    // Current task from todo file
 	TaskStatus  string    // "pending", "in_progress", "completed", or "unknown"

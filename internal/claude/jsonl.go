@@ -26,7 +26,8 @@ type JSONLEntry struct {
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
-	CWD string `json:"cwd"`
+	CWD       string `json:"cwd"`
+	GitBranch string `json:"gitBranch"`
 }
 
 // ParseJSONL reads a JSONL file and returns all entries

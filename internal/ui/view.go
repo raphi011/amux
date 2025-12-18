@@ -158,10 +158,15 @@ func (m Model) renderAgent(ag agent.Agent, selected bool) string {
 	}
 	content.WriteString("\n")
 
-	// Second line: project path
+	// Second line: project name and git branch
 	content.WriteString("    ")
 	content.WriteString(agentIDStyle.Render("Project: "))
-	content.WriteString(projectStyle.Render(shortenPath(ag.ProjectPath)))
+	content.WriteString(projectStyle.Render(ag.ProjectName))
+	if ag.GitBranch != "" {
+		content.WriteString(agentIDStyle.Render(" ["))
+		content.WriteString(projectStyle.Render(ag.GitBranch))
+		content.WriteString(agentIDStyle.Render("]"))
+	}
 	content.WriteString("\n")
 
 	// Third line: current task

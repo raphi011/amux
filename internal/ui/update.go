@@ -158,6 +158,7 @@ func max(a, b int) int {
 func (m *Model) loadDetailMessages() {
 	if len(m.agents) == 0 || m.cursor >= len(m.agents) {
 		m.detailMessages = []string{"No agent selected"}
+		m.detailScroll = 0
 		return
 	}
 
@@ -165,6 +166,7 @@ func (m *Model) loadDetailMessages() {
 	entries, err := claude.ParseJSONL(agent.JSONLPath)
 	if err != nil {
 		m.detailMessages = []string{fmt.Sprintf("Error loading messages: %v", err)}
+		m.detailScroll = 0
 		return
 	}
 
@@ -198,4 +200,11 @@ func (m *Model) loadDetailMessages() {
 	}
 
 	m.detailMessages = messages
+
+	// Start at the last message
+	if len(messages) > 0 {
+		m.detailScroll = len(messages) - 1
+	} else {
+		m.detailScroll = 0
+	}
 }
