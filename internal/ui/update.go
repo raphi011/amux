@@ -171,6 +171,12 @@ func (m *Model) loadDetailMessages() {
 		return
 	}
 
+	// Create markdown renderer once for all assistant messages
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStylePath("dark"),
+		glamour.WithWordWrap(80),
+	)
+
 	// Format each message (in reverse order - newest first)
 	messages := make([]string, 0, len(entries))
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -202,11 +208,7 @@ func (m *Model) loadDetailMessages() {
 		} else {
 			roleStr = assistantRoleStyle.Render("ASSISTANT")
 			// Render markdown for assistant messages
-			renderer, err := glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-				glamour.WithWordWrap(80),
-			)
-			if err == nil {
+			if renderer != nil {
 				rendered, err := renderer.Render(content)
 				if err == nil {
 					contentStyled = rendered
