@@ -9,14 +9,18 @@ import (
 
 // Model represents the Bubbletea application model
 type Model struct {
-	agents       []agent.Agent
-	cursor       int
-	viewportTop  int // First visible item index
-	viewportSize int // Number of items that fit on screen
-	lastUpdate   time.Time
-	err          error
-	loading      bool
-	autoRefresh  bool
+	agents         []agent.Agent
+	cursor         int
+	viewportTop    int // First visible item index
+	viewportSize   int // Number of items that fit on screen
+	lastUpdate     time.Time
+	err            error
+	loading        bool
+	autoRefresh    bool
+	width          int // Terminal width
+	height         int // Terminal height
+	detailMessages []string
+	detailScroll   int
 }
 
 // tickMsg is sent on every auto-refresh tick

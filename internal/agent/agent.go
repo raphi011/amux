@@ -14,6 +14,7 @@ type Agent struct {
 	IsActive    bool      // Active within last 5 minutes
 	TokensUsed  int       // Total tokens used (input + output)
 	TokensInput int       // Input tokens
+	JSONLPath   string    // Path to JSONL file for this agent
 }
 
 // IsRecentlyActive checks if the agent was active in the last 15 minutes

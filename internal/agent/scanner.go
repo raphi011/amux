@@ -133,6 +133,7 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 		TaskStatus:  "unknown",
 		TokensUsed:  totalInput + totalOutput,
 		TokensInput: totalInput,
+		JSONLPath:   filePath,
 	}
 
 	return agent, nil

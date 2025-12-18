@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/raphaelgruber/claude-manager/internal/claude"
 )
 
 // Update handles incoming messages and updates the model
@@ -25,6 +27,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+
+		// Load detail messages for selected agent
+		if len(m.agents) > 0 {
+			m.loadDetailMessages()
+		}
 		return m, nil
 
 	case tickMsg:
@@ -37,6 +44,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
 		// Calculate viewport size based on terminal height
 		// Reserve space for: title (3 lines) + separator (1) + help bar (2) = 6 lines
 		// Each agent takes ~6 lines (name + project + task + last active + tokens + blank)
@@ -83,6 +93,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor < m.viewportTop {
 				m.viewportTop = m.cursor
 			}
+			m.loadDetailMessages()
+			m.detailScroll = 0
 		}
 
 	case "down", "j":
@@ -92,6 +104,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor >= m.viewportTop+m.viewportSize {
 				m.viewportTop = m.cursor - m.viewportSize + 1
 			}
+			m.loadDetailMessages()
+			m.detailScroll = 0
 		}
 
 	case "g":
@@ -111,6 +125,18 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle auto-refresh
 		m.autoRefresh = !m.autoRefresh
 
+	case "left", "h":
+		// Scroll detail up
+		if m.detailScroll > 0 {
+			m.detailScroll--
+		}
+
+	case "right", "l":
+		// Scroll detail down
+		if m.detailScroll < len(m.detailMessages)-1 {
+			m.detailScroll++
+		}
+
 	case "x", "delete":
 		// Kill agent (placeholder for future implementation)
 		// TODO: Implement agent killing functionality
@@ -126,4 +152,50 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// loadDetailMessages loads and formats messages for the currently selected agent
+func (m *Model) loadDetailMessages() {
+	if len(m.agents) == 0 || m.cursor >= len(m.agents) {
+		m.detailMessages = []string{"No agent selected"}
+		return
+	}
+
+	agent := m.agents[m.cursor]
+	entries, err := claude.ParseJSONL(agent.JSONLPath)
+	if err != nil {
+		m.detailMessages = []string{fmt.Sprintf("Error loading messages: %v", err)}
+		return
+	}
+
+	// Format each message
+	messages := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		// Format role and content
+		role := entry.Message.Role
+		if role == "" {
+			role = "unknown"
+		}
+
+		// Extract text content
+		var content string
+		for _, c := range entry.Message.Content {
+			if c.Type == "text" && c.Text != "" {
+				content += c.Text
+			}
+		}
+
+		if content == "" {
+			content = "(no text content)"
+		}
+
+		// Format timestamp
+		timeStr := entry.Timestamp.Format("15:04:05")
+
+		// Create formatted message
+		msg := fmt.Sprintf("[%s] %s:\n%s\n", timeStr, role, content)
+		messages = append(messages, msg)
+	}
+
+	m.detailMessages = messages
 }

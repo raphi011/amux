@@ -4,18 +4,45 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/raphaelgruber/claude-manager/internal/agent"
 )
 
 // View renders the UI
 func (m Model) View() string {
+	if m.width == 0 {
+		return "Loading..."
+	}
+
+	// Calculate column widths (40% for list, 60% for detail)
+	listWidth := m.width * 40 / 100
+	detailWidth := m.width - listWidth - 1 // -1 for separator
+
+	// Render left column (agent list)
+	leftColumn := m.renderAgentList(listWidth)
+
+	// Render right column (detail view)
+	rightColumn := m.renderDetailView(detailWidth)
+
+	// Combine columns side by side
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		leftColumn,
+		lipgloss.NewStyle().Foreground(colorGray).Render("│"),
+		rightColumn,
+	)
+}
+
+// renderAgentList renders the left column with agent list
+func (m Model) renderAgentList(width int) string {
 	var s strings.Builder
 
 	// Title
-	s.WriteString(titleStyle.Render("Claude Code Agent Manager - Running Sessions"))
+	title := titleStyle.Render("Running Sessions")
+	s.WriteString(title)
 	s.WriteString("\n")
-	s.WriteString(separatorStyle.Render(strings.Repeat("─", 80)))
-	s.WriteString("\n\n")
+	s.WriteString(separatorStyle.Render(strings.Repeat("─", width-2)))
+	s.WriteString("\n")
 
 	// Loading state (but still show agents if we have them)
 	if m.loading && len(m.agents) == 0 {
