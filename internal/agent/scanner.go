@@ -55,20 +55,40 @@ func ScanAgents() ([]Agent, error) {
 		}
 	}
 
-	// Get working directories of running Claude processes
+	// Get working directories of running Claude processes with counts
 	runningDirs, err := claude.GetRunningClaudeWorkingDirs()
 	if err != nil || len(runningDirs) == 0 {
 		return []Agent{}, nil
 	}
 
-	// Convert map to slice - only include agents from running directories
-	agents := make([]Agent, 0)
+	// Group agents by project directory
+	agentsByProject := make(map[string][]*Agent)
 	for _, agent := range agentMap {
-		// Load todo information
-		loadTodoInfo(agent)
+		// Only consider agents from running directories
+		if _, ok := runningDirs[agent.ProjectPath]; ok {
+			agentsByProject[agent.ProjectPath] = append(agentsByProject[agent.ProjectPath], agent)
+		}
+	}
 
-		// Only include if this agent's project matches a running directory
-		if runningDirs[agent.ProjectPath] {
+	// For each project, take N most recent agents where N = process count
+	agents := make([]Agent, 0)
+	for dir, count := range runningDirs {
+		projectAgents := agentsByProject[dir]
+
+		// Sort by last active time (newest first)
+		sort.Slice(projectAgents, func(i, j int) bool {
+			return projectAgents[i].LastActive.After(projectAgents[j].LastActive)
+		})
+
+		// Take the N most recent agents
+		takeCount := count
+		if takeCount > len(projectAgents) {
+			takeCount = len(projectAgents)
+		}
+
+		for i := 0; i < takeCount; i++ {
+			agent := projectAgents[i]
+			loadTodoInfo(agent)
 			agent.IsActive = true
 			agents = append(agents, *agent)
 		}

@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// GetRunningClaudeWorkingDirs returns a set of working directories for running Claude processes
-func GetRunningClaudeWorkingDirs() (map[string]bool, error) {
+// GetRunningClaudeWorkingDirs returns working directories and count of processes in each
+func GetRunningClaudeWorkingDirs() (map[string]int, error) {
 	// Get PIDs of running Claude processes
 	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v claude-manager | awk '{print $2}'")
 	output, err := cmd.Output()
@@ -14,7 +14,7 @@ func GetRunningClaudeWorkingDirs() (map[string]bool, error) {
 		return nil, err
 	}
 
-	workingDirs := make(map[string]bool)
+	workingDirs := make(map[string]int)
 	pids := strings.Split(strings.TrimSpace(string(output)), "\n")
 
 	for _, pid := range pids {
@@ -36,7 +36,7 @@ func GetRunningClaudeWorkingDirs() (map[string]bool, error) {
 				// Next line should be the directory path
 				if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "n") {
 					dir := strings.TrimPrefix(lines[i+1], "n")
-					workingDirs[dir] = true
+					workingDirs[dir]++
 					break
 				}
 			}
