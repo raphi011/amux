@@ -35,7 +35,7 @@ func (m Model) View() string {
 	if len(m.agents) == 0 {
 		s.WriteString(loadingStyle.Render("No running Claude Code sessions detected"))
 		s.WriteString("\n")
-		s.WriteString(agentIDStyle.Render("  (showing only sessions with activity in last 2 minutes)"))
+		s.WriteString(agentIDStyle.Render("  (showing only sessions with activity in last 5 minutes)"))
 		s.WriteString("\n")
 		s.WriteString("\n")
 		s.WriteString(helpBarStyle.Render("[r] Refresh  [q] Quit"))
