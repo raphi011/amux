@@ -16,9 +16,9 @@ type Agent struct {
 	TokensInput int       // Input tokens
 }
 
-// IsRecentlyActive checks if the agent was active in the last 5 minutes
+// IsRecentlyActive checks if the agent was active in the last 15 minutes
 func (a *Agent) IsRecentlyActive() bool {
-	return time.Since(a.LastActive) < 5*time.Minute
+	return time.Since(a.LastActive) < 15*time.Minute
 }
 
 // TimeSinceActive returns a human-readable string of time since last activity
