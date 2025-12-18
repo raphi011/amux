@@ -94,6 +94,24 @@ var (
 	// Loading style
 	loadingStyle = lipgloss.NewStyle().
 			Foreground(colorYellow)
+
+	// Message role styles
+	userRoleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorCyan)
+
+	assistantRoleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorGreen)
+
+	messageTimeStyle = lipgloss.NewStyle().
+				Foreground(colorGray)
+
+	userMessageStyle = lipgloss.NewStyle().
+				Foreground(colorWhite)
+
+	assistantMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDDDDD"))
 )
 
 // GetTaskStatusStyle returns the appropriate style for a task status

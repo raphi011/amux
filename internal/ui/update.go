@@ -181,7 +181,7 @@ func (m *Model) loadDetailMessages() {
 			continue
 		}
 
-		// Extract text content
+		// Extract text content (from both "text" and other types)
 		var content string
 		for _, c := range entry.Message.Content {
 			if c.Type == "text" && c.Text != "" {
@@ -194,11 +194,22 @@ func (m *Model) loadDetailMessages() {
 			continue
 		}
 
-		// Format timestamp
-		timeStr := entry.Timestamp.Format("15:04:05")
+		// Format timestamp with color
+		timeStr := messageTimeStyle.Render("[" + entry.Timestamp.Format("15:04:05") + "]")
+
+		// Format role with color
+		var roleStr string
+		var contentStyled string
+		if role == "user" {
+			roleStr = userRoleStyle.Render("USER")
+			contentStyled = userMessageStyle.Render(content)
+		} else {
+			roleStr = assistantRoleStyle.Render("ASSISTANT")
+			contentStyled = assistantMessageStyle.Render(content)
+		}
 
 		// Create formatted message
-		msg := fmt.Sprintf("[%s] %s:\n%s\n", timeStr, role, content)
+		msg := fmt.Sprintf("%s %s:\n%s\n", timeStr, roleStr, contentStyled)
 		messages = append(messages, msg)
 	}
 
