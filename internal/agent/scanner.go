@@ -110,7 +110,8 @@ func parseAgentFromJSONL(filePath string) (*Agent, error) {
 
 // loadTodoInfo loads todo information for an agent
 func loadTodoInfo(agent *Agent) {
-	todoFile, err := claude.FindTodoFile(agent.ID)
+	// Todo files are named by session ID, not agent ID
+	todoFile, err := claude.FindTodoFile(agent.SessionID)
 	if err != nil || todoFile == "" {
 		agent.CurrentTask = "No tasks"
 		agent.TaskStatus = "unknown"
