@@ -181,13 +181,8 @@ func (m *Model) loadDetailMessages() {
 			continue
 		}
 
-		// Extract text content (from both "text" and other types)
-		var content string
-		for _, c := range entry.Message.Content {
-			if c.Type == "text" && c.Text != "" {
-				content += c.Text
-			}
-		}
+		// Extract text content (handles both string and array formats)
+		content := entry.GetContentText()
 
 		// Skip messages with no text content
 		if content == "" {

@@ -14,12 +14,9 @@ type JSONLEntry struct {
 	Slug      string    `json:"slug"`
 	Timestamp time.Time `json:"timestamp"`
 	Message   struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text,omitempty"`
-		} `json:"content"`
-		Usage struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"` // Can be string or array
+		Usage   struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -28,6 +25,35 @@ type JSONLEntry struct {
 	} `json:"message"`
 	CWD       string `json:"cwd"`
 	GitBranch string `json:"gitBranch"`
+}
+
+// ContentItem represents an item in the content array
+type ContentItem struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+// GetContentText extracts text from the Content field (handles both string and array)
+func (e *JSONLEntry) GetContentText() string {
+	// Try to unmarshal as string first
+	var str string
+	if err := json.Unmarshal(e.Message.Content, &str); err == nil {
+		return str
+	}
+
+	// Try to unmarshal as array of ContentItem
+	var items []ContentItem
+	if err := json.Unmarshal(e.Message.Content, &items); err == nil {
+		var text string
+		for _, item := range items {
+			if item.Type == "text" && item.Text != "" {
+				text += item.Text
+			}
+		}
+		return text
+	}
+
+	return ""
 }
 
 // ParseJSONL reads a JSONL file and returns all entries
