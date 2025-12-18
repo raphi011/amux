@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/raphaelgruber/claude-manager/internal/claude"
 )
@@ -200,7 +201,22 @@ func (m *Model) loadDetailMessages() {
 			contentStyled = userMessageStyle.Render(content)
 		} else {
 			roleStr = assistantRoleStyle.Render("ASSISTANT")
-			contentStyled = assistantMessageStyle.Render(content)
+			// Render markdown for assistant messages
+			renderer, err := glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+				glamour.WithWordWrap(80),
+			)
+			if err == nil {
+				rendered, err := renderer.Render(content)
+				if err == nil {
+					contentStyled = rendered
+				} else {
+					// Fallback to plain text if markdown rendering fails
+					contentStyled = assistantMessageStyle.Render(content)
+				}
+			} else {
+				contentStyled = assistantMessageStyle.Render(content)
+			}
 		}
 
 		// Create formatted message
