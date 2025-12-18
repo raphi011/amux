@@ -2,41 +2,46 @@ package claude
 
 import (
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
-// HasRunningClaudeSessions checks if there are any running Claude Code processes
-func HasRunningClaudeSessions() bool {
-	cmd := exec.Command("ps", "aux")
+// GetRunningClaudeWorkingDirs returns a set of working directories for running Claude processes
+func GetRunningClaudeWorkingDirs() (map[string]bool, error) {
+	// Get PIDs of running Claude processes
+	cmd := exec.Command("bash", "-c", "ps aux | grep -E '\\bclaude\\b' | grep -v grep | grep -v claude-manager | awk '{print $2}'")
 	output, err := cmd.Output()
 	if err != nil {
-		return false
+		return nil, err
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		// Look for claude processes (not claude-manager)
-		if strings.Contains(line, "claude") &&
-			!strings.Contains(line, "grep") &&
-			!strings.Contains(line, "claude-manager") {
-			return true
+	workingDirs := make(map[string]bool)
+	pids := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	for _, pid := range pids {
+		if pid == "" {
+			continue
+		}
+
+		// Get working directory for this PID using lsof
+		lsofCmd := exec.Command("lsof", "-p", pid, "-Fn")
+		lsofOutput, err := lsofCmd.Output()
+		if err != nil {
+			continue
+		}
+
+		// Parse lsof output to find cwd
+		lines := strings.Split(string(lsofOutput), "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "fcwd") {
+				// Next line should be the directory path
+				if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "n") {
+					dir := strings.TrimPrefix(lines[i+1], "n")
+					workingDirs[dir] = true
+					break
+				}
+			}
 		}
 	}
-	return false
-}
 
-// GetRunningClaudeProcessCount returns the number of running Claude processes
-func GetRunningClaudeProcessCount() int {
-	cmd := exec.Command("bash", "-c", "ps aux | grep claude | grep -v grep | grep -v claude-manager | wc -l")
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return 0
-	}
-	return count
+	return workingDirs, nil
 }

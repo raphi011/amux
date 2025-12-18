@@ -55,23 +55,23 @@ func ScanAgents() ([]Agent, error) {
 		}
 	}
 
-	// Check if there are any running Claude processes at all
-	hasRunningProcesses := claude.HasRunningClaudeSessions()
-
-	// If no Claude processes are running, return empty list
-	if !hasRunningProcesses {
+	// Get working directories of running Claude processes
+	runningDirs, err := claude.GetRunningClaudeWorkingDirs()
+	if err != nil || len(runningDirs) == 0 {
 		return []Agent{}, nil
 	}
 
-	// Convert map to slice - show all agents when Claude is running
-	agents := make([]Agent, 0, len(agentMap))
+	// Convert map to slice - only include agents from running directories
+	agents := make([]Agent, 0)
 	for _, agent := range agentMap {
 		// Load todo information
 		loadTodoInfo(agent)
 
-		// Mark as active and include all agents
-		agent.IsActive = true
-		agents = append(agents, *agent)
+		// Only include if this agent's project matches a running directory
+		if runningDirs[agent.ProjectPath] {
+			agent.IsActive = true
+			agents = append(agents, *agent)
+		}
 	}
 
 	// Sort agents: active first, then by last active time
