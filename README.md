@@ -1,130 +1,90 @@
-# Claude Manager
+# amux
 
 A TUI (Terminal User Interface) application for monitoring and managing multiple Claude Code agent instances.
 
 ## Features
 
-- **Global Agent Monitoring**: Automatically detects all running Claude Code agents across all projects
-- **Real-time Status**: Shows current task, status, and last activity for each agent
-- **Visual Indicators**: Color-coded active/inactive status with easy-to-read formatting
-- **Keyboard Navigation**: Vim-style shortcuts for efficient navigation
-- **Auto-refresh**: Updates agent information every 2 seconds
-- **Responsive UI**: Handles large numbers of agents smoothly
+- Spawns agents: Spawns new agents (claude code, gemini cli)
+- Real-time Status: Shows current task, status, and last activity for each agent
+- Keyboard Navigation: Vim-style shortcuts for efficient navigation
+- Leverages [Zed Agent Client Protocol](https://zed.dev/acp)
+- Git worktree support. Manage multiple worktrees, spawn agents in each worktree
+- List / Detail view. List of all running agents, detailed view of each agent output
 
-## Installation
+## Technical plan
 
-### Prerequisites
+ACP CLI Multiplexer - Implementation Summary
+Goal
+Build a tmux-like CLI tool in Rust that spawns multiple ACP (Agent Client Protocol) agents, manages their sessions, and renders their output in a TUI.
+Architecture
+┌────────────────────────────────────────────┐
+│              CLI (TUI)                     │
+│  ┌──────────────────────────────────────┐  │
+│  │          Session Manager             │  │
+│  │  - spawn/kill agents                 │  │
+│  │  - route input to focused session    │  │
+│  │  - track state per session           │  │
+│  └──────────────┬───────────────────────┘  │
+│                 │                          │
+│  ┌──────────────┴───────────────────────┐  │
+│  │         ACP Connection Pool          │  │
+│  │  session_1: Claude Code (IDLE)       │  │
+│  │  session_2: Gemini CLI (WORKING)     │  │
+│  │  session_3: Custom Agent (TOOL)      │  │
+│  └──────────────────────────────────────┘  │
+└────────────────────────────────────────────┘
+         │            │            │
+       stdio        stdio        stdio
+         ▼            ▼            ▼
+      Agent 1      Agent 2      Agent 3
+Per-Session State Machine
+SPAWNING → INITIALIZING → IDLE ⇄ PROMPTING
+                            ↓
+                     AWAITING_PERMISSION
+State transitions:
 
-- Go 1.21 or later
-- Claude Code CLI installed
+IDLE → PROMPTING: send session/prompt
+PROMPTING → IDLE: receive PromptResponse(stop_reason: end_turn)
+PROMPTING → AWAITING_PERMISSION: agent sends session/request_permission
+AWAITING_PERMISSION → PROMPTING: respond to permission request
 
-### Build from source
+TUI Layout
+┌─ Sessions ──────────────────────────────────┐
+│ [1] claude-code    IDLE                     │
+│ [2] gemini-cli     ● streaming...           │
+│ [3] my-agent       ⚠ permission required    │
+├─ Output (session 2) ────────────────────────┤
+│ I'll analyze the codebase structure...      │
+│ [tool: read_file] src/main.rs ✓             │
+├─ Input ─────────────────────────────────────┤
+│ > _                                         │
+└─────────────────────────────────────────────┘
+Layout structure:
 
-```bash
-cd claude-manager
-go mod download
-go build -o claude-manager
-```
+Horizontal split: sidebar (fixed 30 chars) | main content
+Vertical split on main: agent output (flex) | status bar (1 line)
 
-### Install globally
+Dependencies
+toml[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+agent-client-protocol = "0.1"
 
-```bash
-go install
-```
+# Optional helpers
+tui-textarea = "0.7"    # input widget with cursor/history
+tui-scrollview = "0.4"  # scrollable output viewport
+Key Implementation Details
 
-## Usage
+Async multiplexing: One tokio task per agent reading stdout, all feeding into a central mpsc channel
+Event loop: Single loop handling agent updates + keyboard input, updating state and triggering re-renders
+ACP protocol: Agents communicate via JSON-RPC over stdio; use stop_reason in PromptResponse to detect idle state
+Rendering: Buffer session_update chunks per session, render focused session, show status badges on others
 
-Simply run the application:
+ACP Protocol Reference
 
-```bash
-./claude-manager
-```
+Spec: https://agentclientprotocol.com
+Key messages: initialize, session/new, session/prompt, session/update (notification), session/request_permission
+Stop reasons: end_turn (idle), cancelled, max_tokens
 
-Or if installed globally:
-
-```bash
-claude-manager
-```
-
-### Keyboard Controls
-
-- `↑` / `k` - Move cursor up
-- `↓` / `j` - Move cursor down
-- `g` - Jump to top of list
-- `G` - Jump to bottom of list
-- `r` - Refresh agent list manually
-- `x` / `delete` - Kill selected agent (coming soon)
-- `q` / `Esc` / `Ctrl+C` - Quit
-
-## How It Works
-
-Claude Manager monitors your `~/.claude/` directory structure to detect and track running agents:
-
-1. **Agent Detection**: Scans `~/.claude/projects/` for agent JSONL files
-2. **Status Tracking**: Parses agent transcripts to determine last activity
-3. **Task Information**: Reads todo files from `~/.claude/todos/` to show current tasks
-4. **Active Detection**: Marks agents as active if they've been active in the last 5 minutes
-
-## Display Information
-
-For each agent, the manager displays:
-
-- **Indicator**: Green circle (●) for active, gray circle (○) for inactive
-- **Name**: Human-readable slug (e.g., "typed-doodling-meerkat") or agent ID
-- **Agent ID**: Short identifier (e.g., "a1a0698") shown in parentheses if slug exists
-- **Project**: Working directory path
-- **Current Task**: Task description with status badge
-  - `[IN PROGRESS]` - Currently executing (green)
-  - `[PENDING]` - Waiting to be executed (yellow)
-  - `[COMPLETED]` - Finished (blue)
-- **Last Active**: Human-readable time since last activity
-
-## Architecture
-
-```
-claude-manager/
-├── main.go                     # Entry point
-├── internal/
-│   ├── agent/
-│   │   ├── agent.go           # Agent data structure
-│   │   └── scanner.go         # Agent detection logic
-│   ├── claude/
-│   │   ├── paths.go           # Claude directory paths
-│   │   ├── jsonl.go           # JSONL parser
-│   │   └── todos.go           # Todo file parser
-│   └── ui/
-│       ├── model.go           # Bubbletea model
-│       ├── update.go          # Update logic (with responsive fixes)
-│       ├── view.go            # Rendering
-│       └── styles.go          # Lipgloss styling
-```
-
-## Dependencies
-
-- [Bubbletea](https://github.com/charmbracelet/bubbletea) - TUI framework
-- [Lipgloss](https://github.com/charmbracelet/lipgloss) - Terminal styling
-
-## Performance Notes
-
-- Handles hundreds of agents efficiently
-- Async agent loading prevents UI blocking
-- Auto-refresh respects loading state to prevent multiple concurrent scans
-- Keyboard input is always responsive, even during loading
-
-## Future Enhancements
-
-- Agent killing functionality
-- Detail view with full message history
-- Real-time log tailing
-- Filter by project or status
-- Agent statistics (token usage, runtime)
-- Export session data
-- Resume/attach to agent session
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## License
-
-MIT License
+Create a UI similar to the [screenshot](./ui.png)
