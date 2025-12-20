@@ -4,6 +4,7 @@ mod client;
 pub use protocol::{
     SessionUpdate, PermissionOptionInfo, PermissionKind,
     PlanEntry, PlanStatus, PermissionOptionId, ContentBlock,
-    ModelsState, ModelInfo,
+    ModelsState, ModelInfo, AskUserRequestParams, AskUserOption,
+    AskUserResponse,
 };
 pub use client::{AgentConnection, AgentEvent};

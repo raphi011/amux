@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::time::Instant;
-use crate::acp::{PermissionOptionInfo, PermissionKind, PlanEntry};
+use crate::acp::{PermissionOptionInfo, PermissionKind, PlanEntry, AskUserOption};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AgentType {
@@ -40,6 +40,7 @@ pub enum SessionState {
     Idle,
     Prompting,
     AwaitingPermission,
+    AwaitingUserInput,
 }
 
 /// Permission handling mode for a session
@@ -79,6 +80,7 @@ impl SessionState {
             SessionState::Idle => "idle",
             SessionState::Prompting => "working...",
             SessionState::AwaitingPermission => "⚠ permission required",
+            SessionState::AwaitingUserInput => "? question",
         }
     }
 
@@ -120,6 +122,103 @@ impl PendingPermission {
     }
 }
 
+/// Pending clarifying question from agent
+#[derive(Debug, Clone)]
+pub struct PendingQuestion {
+    pub request_id: u64,
+    pub question: String,
+    pub options: Vec<AskUserOption>,
+    pub multi_select: bool,
+    pub selected: usize,
+    pub input: String,
+    pub cursor_position: usize,
+}
+
+impl PendingQuestion {
+    pub fn new(request_id: u64, question: String, options: Vec<AskUserOption>, multi_select: bool) -> Self {
+        Self {
+            request_id,
+            question,
+            options,
+            multi_select,
+            selected: 0,
+            input: String::new(),
+            cursor_position: 0,
+        }
+    }
+
+    /// Check if this is a free-text question (no options)
+    pub fn is_free_text(&self) -> bool {
+        self.options.is_empty()
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.options.is_empty() {
+            self.selected = (self.selected + 1) % self.options.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.options.is_empty() {
+            self.selected = self.selected.checked_sub(1).unwrap_or(self.options.len() - 1);
+        }
+    }
+
+    pub fn selected_option(&self) -> Option<&AskUserOption> {
+        self.options.get(self.selected)
+    }
+
+    /// Get the answer based on current state
+    pub fn get_answer(&self) -> String {
+        if self.is_free_text() {
+            self.input.clone()
+        } else if let Some(opt) = self.selected_option() {
+            opt.value.clone().unwrap_or_else(|| opt.label.clone())
+        } else {
+            self.input.clone()
+        }
+    }
+
+    // Input handling methods
+    pub fn input_char(&mut self, c: char) {
+        self.input.insert(self.cursor_position, c);
+        self.cursor_position += 1;
+    }
+
+    pub fn input_backspace(&mut self) {
+        if self.cursor_position > 0 {
+            self.cursor_position -= 1;
+            self.input.remove(self.cursor_position);
+        }
+    }
+
+    pub fn input_delete(&mut self) {
+        if self.cursor_position < self.input.len() {
+            self.input.remove(self.cursor_position);
+        }
+    }
+
+    pub fn input_left(&mut self) {
+        if self.cursor_position > 0 {
+            self.cursor_position -= 1;
+        }
+    }
+
+    pub fn input_right(&mut self) {
+        if self.cursor_position < self.input.len() {
+            self.cursor_position += 1;
+        }
+    }
+
+    pub fn input_home(&mut self) {
+        self.cursor_position = 0;
+    }
+
+    pub fn input_end(&mut self) {
+        self.cursor_position = self.input.len();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
@@ -134,6 +233,7 @@ pub struct Session {
     pub last_activity: Option<Instant>,
     pub scroll_offset: usize,
     pub pending_permission: Option<PendingPermission>,
+    pub pending_question: Option<PendingQuestion>,
     pub plan_entries: Vec<PlanEntry>,
     pub current_mode: Option<String>,
     pub active_tool_call_id: Option<String>,
@@ -183,6 +283,7 @@ impl Session {
             last_activity: Some(Instant::now()),
             scroll_offset: 0,
             pending_permission: None,
+            pending_question: None,
             plan_entries: vec![],
             current_mode: None,
             active_tool_call_id: None,
@@ -360,6 +461,7 @@ impl Session {
             last_activity: None,
             scroll_offset: 0,
             pending_permission: None,
+            pending_question: None,
             plan_entries: vec![],
             current_mode: None,
             active_tool_call_id: None,

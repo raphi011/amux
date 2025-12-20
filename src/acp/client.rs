@@ -4,11 +4,12 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
-use super::protocol::*;
+use super::protocol::{*, AskUserRequestParams, AskUserOption, AskUserResponse};
 use crate::log;
 use crate::session::AgentType;
 
@@ -18,6 +19,10 @@ struct Terminal {
     exit_code: Option<i32>,
     child: Option<Child>,
 }
+
+/// Shared state for terminals that can be accessed from multiple tasks
+type Terminals = Arc<Mutex<HashMap<String, Terminal>>>;
+type TerminalCounter = Arc<Mutex<u64>>;
 
 /// Events from an agent connection
 #[derive(Debug)]
@@ -39,6 +44,13 @@ pub enum AgentEvent {
         tool_call_id: String,
         title: Option<String>,
         options: Vec<PermissionOptionInfo>,
+    },
+    AskUserRequest {
+        request_id: u64,
+        session_id: String,
+        question: String,
+        options: Vec<AskUserOption>,
+        multi_select: bool,
     },
     PromptComplete {
         stop_reason: StopReason,
@@ -97,11 +109,14 @@ impl AgentConnection {
         // Spawn read task
         let event_tx_clone = event_tx.clone();
         let response_tx = tx.clone(); // For sending responses to fs/terminal requests
+        
+        // Shared state for terminals - allows concurrent command execution
+        let terminals: Terminals = Arc::new(Mutex::new(HashMap::new()));
+        let terminal_counter: TerminalCounter = Arc::new(Mutex::new(0));
+        
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
-            let mut terminals: HashMap<String, Terminal> = HashMap::new();
-            let mut terminal_counter: u64 = 0;
 
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.trim().is_empty() {
@@ -214,6 +229,35 @@ impl AgentConnection {
                                     }
                                 }
                             }
+                        } else if method == "session/ask_user" {
+                            // Handle ask_user request (Claude Code extension)
+                            if let Some(params) = params {
+                                match serde_json::from_value::<AskUserRequestParams>(params.clone()) {
+                                    Ok(ask_req) => {
+                                        log::log_event(&format!(
+                                            "Ask user request: question={:?}, options={}",
+                                            ask_req.question,
+                                            ask_req.options.len()
+                                        ));
+                                        let _ = event_tx_clone
+                                            .send(AgentEvent::AskUserRequest {
+                                                request_id: id,
+                                                session_id: ask_req.session_id,
+                                                question: ask_req.question,
+                                                options: ask_req.options,
+                                                multi_select: ask_req.multi_select,
+                                            })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx_clone
+                                            .send(AgentEvent::Error {
+                                                message: format!("Ask user parse error: {} - params: {:?}", e, params),
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
                         } else if method == "fs/read_text_file" {
                             // Handle file read request
                             if let Some(params) = params {
@@ -314,6 +358,35 @@ impl AgentConnection {
                             if let Some(params) = params {
                                 match serde_json::from_value::<TerminalCreateParams>(params.clone()) {
                                     Ok(term_params) => {
+                                        // Assign terminal ID immediately
+                                        let terminal_id = {
+                                            let mut counter = terminal_counter.lock().await;
+                                            *counter += 1;
+                                            format!("term_{}", *counter)
+                                        };
+
+                                        // Insert placeholder terminal (command running)
+                                        {
+                                            let mut terms = terminals.lock().await;
+                                            terms.insert(terminal_id.clone(), Terminal {
+                                                output: String::new(),
+                                                exit_code: None,
+                                                child: None,
+                                            });
+                                        }
+
+                                        // Respond immediately with terminal ID
+                                        let result = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": id,
+                                            "result": {
+                                                "_meta": null,
+                                                "terminalId": terminal_id.clone()
+                                            }
+                                        });
+                                        let json = serde_json::to_string(&result).unwrap_or_default();
+                                        let _ = response_tx.send(json).await;
+
                                         // Build the full command with args
                                         let full_command = if term_params.args.is_empty() {
                                             term_params.command.clone()
@@ -321,65 +394,60 @@ impl AgentConnection {
                                             format!("{} {}", term_params.command, term_params.args.join(" "))
                                         };
 
-                                        // Execute through shell to support pipes, redirects, etc.
-                                        let mut cmd = std::process::Command::new("sh");
-                                        cmd.arg("-c");
-                                        cmd.arg(&full_command);
-                                        if let Some(cwd) = &term_params.cwd {
-                                            cmd.current_dir(cwd);
-                                        }
-                                        for env_var in &term_params.env {
-                                            cmd.env(&env_var.name, &env_var.value);
-                                        }
-                                        cmd.stdout(Stdio::piped());
-                                        cmd.stderr(Stdio::piped());
+                                        let cwd = term_params.cwd.clone();
+                                        let env_vars: Vec<_> = term_params.env.iter()
+                                            .map(|e| (e.name.clone(), e.value.clone()))
+                                            .collect();
+                                        let output_limit = term_params.output_byte_limit;
 
-                                        match cmd.output() {
-                                            Ok(output) => {
-                                                terminal_counter += 1;
-                                                let terminal_id = format!("term_{}", terminal_counter);
+                                        // Spawn command execution in background - doesn't block message loop
+                                        let terminals_clone = Arc::clone(&terminals);
+                                        let terminal_id_clone = terminal_id.clone();
+                                        tokio::spawn(async move {
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                let mut cmd = std::process::Command::new("sh");
+                                                cmd.arg("-c");
+                                                cmd.arg(&full_command);
+                                                if let Some(cwd) = &cwd {
+                                                    cmd.current_dir(cwd);
+                                                }
+                                                for (name, value) in &env_vars {
+                                                    cmd.env(name, value);
+                                                }
+                                                cmd.stdout(std::process::Stdio::piped());
+                                                cmd.stderr(std::process::Stdio::piped());
+                                                cmd.output()
+                                            }).await;
 
-                                                let mut out = String::from_utf8_lossy(&output.stdout).to_string();
-                                                out.push_str(&String::from_utf8_lossy(&output.stderr));
+                                            // Update terminal with results
+                                            let mut terms = terminals_clone.lock().await;
+                                            if let Some(terminal) = terms.get_mut(&terminal_id_clone) {
+                                                match result {
+                                                    Ok(Ok(output)) => {
+                                                        let mut out = String::from_utf8_lossy(&output.stdout).to_string();
+                                                        out.push_str(&String::from_utf8_lossy(&output.stderr));
 
-                                                // Apply output byte limit if specified
-                                                if let Some(limit) = term_params.output_byte_limit {
-                                                    if out.len() > limit {
-                                                        out = out[out.len() - limit..].to_string();
+                                                        // Apply output byte limit if specified
+                                                        if let Some(limit) = output_limit {
+                                                            if out.len() > limit {
+                                                                out = out[out.len() - limit..].to_string();
+                                                            }
+                                                        }
+
+                                                        terminal.output = out;
+                                                        terminal.exit_code = output.status.code();
+                                                    }
+                                                    Ok(Err(e)) => {
+                                                        terminal.output = format!("Error: {}", e);
+                                                        terminal.exit_code = Some(-1);
+                                                    }
+                                                    Err(e) => {
+                                                        terminal.output = format!("Task failed: {}", e);
+                                                        terminal.exit_code = Some(-1);
                                                     }
                                                 }
-
-                                                let exit_code = output.status.code();
-                                                terminals.insert(terminal_id.clone(), Terminal {
-                                                    output: out,
-                                                    exit_code,
-                                                    child: None,
-                                                });
-
-                                                let result = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": id,
-                                                    "result": {
-                                                        "_meta": null,
-                                                        "terminalId": terminal_id
-                                                    }
-                                                });
-                                                let json = serde_json::to_string(&result).unwrap_or_default();
-                                                let _ = response_tx.send(json).await;
                                             }
-                                            Err(e) => {
-                                                let error_resp = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": id,
-                                                    "error": {
-                                                        "code": -32000,
-                                                        "message": format!("Failed to execute command: {}", e)
-                                                    }
-                                                });
-                                                let json = serde_json::to_string(&error_resp).unwrap_or_default();
-                                                let _ = response_tx.send(json).await;
-                                            }
-                                        }
+                                        });
                                     }
                                     Err(e) => {
                                         let error_resp = serde_json::json!({
@@ -400,7 +468,8 @@ impl AgentConnection {
                             if let Some(params) = params {
                                 match serde_json::from_value::<TerminalOutputParams>(params.clone()) {
                                     Ok(term_params) => {
-                                        if let Some(terminal) = terminals.get(&term_params.terminal_id) {
+                                        let terms = terminals.lock().await;
+                                        if let Some(terminal) = terms.get(&term_params.terminal_id) {
                                             let result = serde_json::json!({
                                                 "jsonrpc": "2.0",
                                                 "id": id,
@@ -411,8 +480,10 @@ impl AgentConnection {
                                                 }
                                             });
                                             let json = serde_json::to_string(&result).unwrap_or_default();
+                                            drop(terms); // Release lock before await
                                             let _ = response_tx.send(json).await;
                                         } else {
+                                            drop(terms); // Release lock before await
                                             let error_resp = serde_json::json!({
                                                 "jsonrpc": "2.0",
                                                 "id": id,
@@ -440,33 +511,70 @@ impl AgentConnection {
                                 }
                             }
                         } else if method == "terminal/wait_for_exit" {
-                            // Handle terminal wait request - since we run sync, it's already done
+                            // Handle terminal wait request
+                            // Poll until exit_code is set (command completed)
                             if let Some(params) = params {
                                 match serde_json::from_value::<TerminalWaitParams>(params.clone()) {
                                     Ok(term_params) => {
-                                        if let Some(terminal) = terminals.get(&term_params.terminal_id) {
-                                            let result = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": id,
-                                                "result": {
-                                                    "_meta": null,
-                                                    "exitCode": terminal.exit_code,
-                                                    "timedOut": false,
+                                        let timeout_ms = term_params.timeout_ms.unwrap_or(30000);
+                                        let start = std::time::Instant::now();
+                                        let terminal_id = term_params.terminal_id.clone();
+                                        let terminals_clone = Arc::clone(&terminals);
+                                        
+                                        // Poll for completion
+                                        loop {
+                                            let terms = terminals_clone.lock().await;
+                                            if let Some(terminal) = terms.get(&terminal_id) {
+                                                if terminal.exit_code.is_some() {
+                                                    // Command completed
+                                                    let result = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": id,
+                                                        "result": {
+                                                            "_meta": null,
+                                                            "exitCode": terminal.exit_code,
+                                                            "timedOut": false,
+                                                        }
+                                                    });
+                                                    let json = serde_json::to_string(&result).unwrap_or_default();
+                                                    drop(terms);
+                                                    let _ = response_tx.send(json).await;
+                                                    break;
                                                 }
-                                            });
-                                            let json = serde_json::to_string(&result).unwrap_or_default();
-                                            let _ = response_tx.send(json).await;
-                                        } else {
-                                            let error_resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": id,
-                                                "error": {
-                                                    "code": -32000,
-                                                    "message": "Terminal not found"
-                                                }
-                                            });
-                                            let json = serde_json::to_string(&error_resp).unwrap_or_default();
-                                            let _ = response_tx.send(json).await;
+                                            } else {
+                                                drop(terms);
+                                                let error_resp = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id,
+                                                    "error": {
+                                                        "code": -32000,
+                                                        "message": "Terminal not found"
+                                                    }
+                                                });
+                                                let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                                let _ = response_tx.send(json).await;
+                                                break;
+                                            }
+                                            drop(terms);
+                                            
+                                            // Check timeout
+                                            if start.elapsed().as_millis() as u64 > timeout_ms {
+                                                let result = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id,
+                                                    "result": {
+                                                        "_meta": null,
+                                                        "exitCode": null,
+                                                        "timedOut": true,
+                                                    }
+                                                });
+                                                let json = serde_json::to_string(&result).unwrap_or_default();
+                                                let _ = response_tx.send(json).await;
+                                                break;
+                                            }
+                                            
+                                            // Wait a bit before polling again
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                                         }
                                     }
                                     Err(e) => {
@@ -488,7 +596,9 @@ impl AgentConnection {
                             if let Some(params) = params {
                                 match serde_json::from_value::<TerminalKillParams>(params.clone()) {
                                     Ok(term_params) => {
-                                        terminals.remove(&term_params.terminal_id);
+                                        let mut terms = terminals.lock().await;
+                                        terms.remove(&term_params.terminal_id);
+                                        drop(terms);
                                         let result = serde_json::json!({
                                             "jsonrpc": "2.0",
                                             "id": id,
@@ -676,6 +786,19 @@ impl AgentConnection {
         });
 
         let json = serde_json::to_string(&response)?;
+        self.tx.send(json).await?;
+        Ok(())
+    }
+
+    /// Respond to an ask_user request
+    pub async fn respond_ask_user(&mut self, request_id: u64, response: AskUserResponse) -> Result<()> {
+        let rpc_response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": response
+        });
+
+        let json = serde_json::to_string(&rpc_response)?;
         self.tx.send(json).await?;
         Ok(())
     }

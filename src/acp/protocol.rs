@@ -325,6 +325,58 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
 }
 
 // ============================================================================
+// Ask user request parsing (incoming from agent - Claude Code extension)
+// ============================================================================
+
+/// Ask user request params (for parsing incoming requests)
+/// This is a Claude Code extension to ACP for clarifying questions
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserRequestParams {
+    pub session_id: String,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<AskUserOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// An option for a clarifying question
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserOption {
+    pub label: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+/// Response to an ask_user request
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserResponse {
+    pub answer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_options: Option<Vec<String>>,
+}
+
+impl AskUserResponse {
+    pub fn text(answer: String) -> Self {
+        Self {
+            answer,
+            selected_options: None,
+        }
+    }
+
+    pub fn selected(options: Vec<String>) -> Self {
+        let answer = options.join(", ");
+        Self {
+            answer,
+            selected_options: Some(options),
+        }
+    }
+}
+
+// ============================================================================
 // Permission request parsing (incoming from agent)
 // ============================================================================
 

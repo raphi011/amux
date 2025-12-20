@@ -37,9 +37,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Render session list with hotkeys and plan at bottom
     render_session_list(frame, sidebar_layout[1], app);
 
-    // Check if there's a pending permission
+    // Check if there's a pending permission or question
     let has_permission = app.selected_session()
         .map(|s| s.pending_permission.is_some())
+        .unwrap_or(false);
+
+    let has_question = app.selected_session()
+        .map(|s| s.pending_question.is_some())
         .unwrap_or(false);
 
     // Render vertical separator
@@ -47,8 +51,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Calculate input bar height based on content wrapping
     let input_area_width = content_layout[4].width.saturating_sub(2) as usize; // Account for prompt "> "
-    let input_height = if has_permission {
-        0 // No input bar when permission dialog is shown
+    let input_height = if has_permission || has_question {
+        0 // No input bar when permission/question dialog is shown
     } else {
         // Calculate wrapped lines for input buffer only (attachments are on separate line)
         let wrapped_lines = if input_area_width > 0 && !app.input_buffer.is_empty() {
@@ -61,11 +65,28 @@ pub fn render(frame: &mut Frame, app: &App) {
         (wrapped_lines + 1 + attachment_line) as u16
     };
 
-    // Right side: output + separator + permission/input
+    // Calculate question dialog height
+    let question_height = if has_question {
+        if let Some(session) = app.selected_session() {
+            if let Some(q) = &session.pending_question {
+                // 2 for question + blank, options count, 2 for input, 1 for help
+                let options_height = if q.options.is_empty() { 0 } else { q.options.len() as u16 + 1 };
+                5 + options_height
+            } else { 6 }
+        } else { 6 }
+    } else { 6 };
+
+    // Right side: output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
             Constraint::Min(0),     // Output
             Constraint::Length(6),  // Permission dialog
+        ])
+        .split(content_layout[4])
+    } else if has_question {
+        Layout::vertical([
+            Constraint::Min(0),                    // Output
+            Constraint::Length(question_height),   // Question dialog
         ])
         .split(content_layout[4])
     } else {
@@ -92,9 +113,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_output_area(frame, right_layout[0], app);
     }
 
-    // Render permission dialog or input bar
+    // Render permission dialog, question dialog, or input bar
     if has_permission {
         render_permission_dialog(frame, right_layout[1], app);
+    } else if has_question {
+        render_question_dialog(frame, right_layout[1], app);
     } else {
         // Render horizontal separator (index 1 is empty, 2 is separator, 3 is empty, 4 is input)
         render_horizontal_separator(frame, right_layout[2]);
@@ -300,6 +323,7 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
                 SessionState::Initializing => format!("Initializing {}...", session.name),
                 SessionState::Prompting => format!("{} is working...", session.name),
                 SessionState::AwaitingPermission => format!("{} needs permission.", session.name),
+                SessionState::AwaitingUserInput => format!("{} is asking a question.", session.name),
             };
             vec![Line::styled(status, Style::new().fg(TEXT_DIM))]
         } else {
@@ -1009,6 +1033,93 @@ fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::new().fg(LOGO_GOLD));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines: Vec<Line> = vec![];
+
+    if let Some(session) = app.selected_session() {
+        if let Some(question) = &session.pending_question {
+            // Header with question
+            lines.push(Line::from(vec![
+                Span::styled("? ", Style::new().fg(Color::Cyan)),
+                Span::styled(&question.question, Style::new().fg(TEXT_WHITE).bold()),
+            ]));
+            lines.push(Line::raw(""));
+
+            // Options if present
+            if !question.options.is_empty() {
+                for (i, option) in question.options.iter().enumerate() {
+                    let is_selected = i == question.selected;
+                    let cursor = if is_selected { "> " } else { "  " };
+
+                    let style = if is_selected {
+                        Style::new().fg(TEXT_WHITE).bold()
+                    } else {
+                        Style::new().fg(TEXT_DIM)
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(cursor, style),
+                        Span::styled(&option.label, style),
+                    ]));
+                }
+                lines.push(Line::raw(""));
+            }
+
+            // Input field
+            let input_prefix = "> ";
+            let cursor_pos = question.cursor_position;
+            let input = &question.input;
+
+            // Show cursor in input
+            let before_cursor = &input[..cursor_pos];
+            let at_cursor = if cursor_pos < input.len() {
+                &input[cursor_pos..cursor_pos + 1]
+            } else {
+                " "
+            };
+            let after_cursor = if cursor_pos < input.len() {
+                &input[cursor_pos + 1..]
+            } else {
+                ""
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(input_prefix, Style::new().fg(Color::Cyan)),
+                Span::styled(before_cursor, Style::new().fg(TEXT_WHITE)),
+                Span::styled(at_cursor, Style::new().fg(Color::Black).bg(TEXT_WHITE)),
+                Span::styled(after_cursor, Style::new().fg(TEXT_WHITE)),
+            ]));
+
+            // Help text
+            lines.push(Line::raw(""));
+            if question.options.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+                    Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
+                    Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+                    Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("[↑/↓]", Style::new().fg(TEXT_WHITE)),
+                    Span::styled(" select • ", Style::new().fg(TEXT_DIM)),
+                    Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+                    Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
+                    Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+                    Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+                ]));
+            }
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::new().fg(Color::Cyan));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
