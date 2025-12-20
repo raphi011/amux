@@ -19,10 +19,10 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock};
+use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock, AskUserResponse};
 use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry};
 use clipboard::ClipboardContent;
-use session::{AgentType, OutputType, SessionState, PendingPermission, PermissionMode};
+use session::{AgentType, OutputType, SessionState, PendingPermission, PendingQuestion, PermissionMode};
 
 /// Get the current git branch for a directory
 async fn get_git_branch(cwd: &std::path::Path) -> String {
@@ -146,6 +146,7 @@ enum AgentCommand {
     Prompt { session_id: String, text: String },
     PromptWithContent { session_id: String, content: Vec<ContentBlock> },
     PermissionResponse { request_id: u64, option_id: Option<PermissionOptionId> },
+    AskUserResponse { request_id: u64, answer: String },
     CancelPrompt,
     SetModel { session_id: String, model_id: String },
 }
@@ -286,6 +287,11 @@ where
                                     .map(|s| s.pending_permission.is_some())
                                     .unwrap_or(false);
 
+                                // Check if there's a pending question
+                                let has_question = app.sessions.selected_session()
+                                    .map(|s| s.pending_question.is_some())
+                                    .unwrap_or(false);
+
                                 if has_permission {
                                     // Permission mode keys
                                     match key.code {
@@ -340,6 +346,121 @@ where
                                                 if let Some(perm) = &mut session.pending_permission {
                                                     perm.select_prev();
                                                 }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                } else if has_question {
+                                    // Question mode keys - allows typing
+                                    let session_idx = app.sessions.selected_index();
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            // Submit answer
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &session.pending_question {
+                                                    let answer = question.get_answer();
+                                                    let request_id = question.request_id;
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                        let _ = cmd_tx.send(AgentCommand::AskUserResponse {
+                                                            request_id,
+                                                            answer,
+                                                        }).await;
+                                                    }
+                                                    session.pending_question = None;
+                                                    session.state = SessionState::Prompting;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Esc => {
+                                            // Cancel - send empty response
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &session.pending_question {
+                                                    let request_id = question.request_id;
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                        let _ = cmd_tx.send(AgentCommand::AskUserResponse {
+                                                            request_id,
+                                                            answer: String::new(),
+                                                        }).await;
+                                                    }
+                                                    session.pending_question = None;
+                                                    session.state = SessionState::Idle;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            // Type into input
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_char(c);
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Backspace => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_backspace();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Delete => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_delete();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Left => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_left();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Right => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_right();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Home => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_home();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::End => {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    question.input_end();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Up => {
+                                            // Navigate options if available
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    if !question.is_free_text() {
+                                                        question.select_prev();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Down => {
+                                            // Navigate options if available
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(question) = &mut session.pending_question {
+                                                    if !question.is_free_text() {
+                                                        question.select_next();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Tab => {
+                                            // Cycle permission mode even when answering questions
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                session.cycle_permission_mode();
                                             }
                                         }
                                         _ => {}
@@ -822,6 +943,13 @@ where
                                         // Ctrl+X: clear all attachments
                                         app.clear_attachments();
                                     }
+                                    KeyCode::Tab => {
+                                        // Cycle permission mode for selected session
+                                        let session_idx = app.sessions.selected_index();
+                                        if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            session.cycle_permission_mode();
+                                        }
+                                    }
                                     // Word/line navigation
                                     KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                         // Ctrl+A: jump to start of line
@@ -1028,6 +1156,14 @@ async fn spawn_agent_in_dir(
                                 }).await;
                             }
                         }
+                        AgentCommand::AskUserResponse { request_id, answer } => {
+                            let response = AskUserResponse::text(answer);
+                            if let Err(e) = conn.respond_ask_user(request_id, response).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Ask user response failed: {}", e),
+                                }).await;
+                            }
+                        }
                         AgentCommand::CancelPrompt => {
                             if let Err(e) = conn.cancel_prompt().await {
                                 let _ = event_tx.send(AgentEvent::Error {
@@ -1136,6 +1272,14 @@ async fn spawn_agent_with_resume(
                             if let Err(e) = conn.respond_permission(request_id, option_id).await {
                                 let _ = event_tx.send(AgentEvent::Error {
                                     message: format!("Permission response failed: {}", e),
+                                }).await;
+                            }
+                        }
+                        AgentCommand::AskUserResponse { request_id, answer } => {
+                            let response = AskUserResponse::text(answer);
+                            if let Err(e) = conn.respond_ask_user(request_id, response).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Ask user response failed: {}", e),
                                 }).await;
                             }
                         }
@@ -1372,6 +1516,22 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     options,
                     selected: 0,
                 });
+            }
+            AgentEvent::AskUserRequest {
+                request_id,
+                question,
+                options,
+                multi_select,
+                ..
+            } => {
+                // Show clarifying question dialog
+                session.state = SessionState::AwaitingUserInput;
+                session.pending_question = Some(PendingQuestion::new(
+                    request_id,
+                    question,
+                    options,
+                    multi_select,
+                ));
             }
             AgentEvent::PromptComplete { .. } => {
                 session.state = SessionState::Idle;
