@@ -9,6 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 
+use serde_json::Value;
+
 use super::protocol::{*, AskUserRequestParams, AskUserOption, AskUserResponse};
 use crate::log;
 use crate::session::AgentType;
@@ -29,6 +31,7 @@ type TerminalCounter = Arc<Mutex<u64>>;
 pub enum AgentEvent {
     Initialized {
         agent_info: Option<AgentInfo>,
+        agent_capabilities: Option<Value>,
     },
     SessionCreated {
         session_id: String,
@@ -140,6 +143,7 @@ impl AgentConnection {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::Initialized {
                                         agent_info: init.agent_info,
+                                        agent_capabilities: init.agent_capabilities,
                                     })
                                     .await;
                             } else if let Ok(session) = serde_json::from_value::<NewSessionResult>(result.clone()) {
