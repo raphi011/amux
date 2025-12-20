@@ -131,6 +131,14 @@ impl AgentPickerState {
 /// Spinner frames for loading animation
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// An image attachment ready to be sent with a prompt
+#[derive(Debug, Clone)]
+pub struct ImageAttachment {
+    pub filename: String,
+    pub mime_type: String,
+    pub data: String, // base64 encoded
+}
+
 pub struct App {
     pub sessions: SessionManager,
     pub input_mode: InputMode,
@@ -141,10 +149,13 @@ pub struct App {
     pub agent_picker: Option<AgentPickerState>,
     pub session_picker: Option<SessionPickerState>,
     pub spinner_frame: usize,
+    pub attachments: Vec<ImageAttachment>,
+    pub selected_attachment: Option<usize>,
+    pub start_dir: PathBuf,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(start_dir: PathBuf) -> Self {
         Self {
             sessions: SessionManager::new(),
             input_mode: InputMode::Normal,
@@ -155,6 +166,71 @@ impl App {
             agent_picker: None,
             session_picker: None,
             spinner_frame: 0,
+            attachments: Vec::new(),
+            selected_attachment: None,
+            start_dir,
+        }
+    }
+
+    /// Add an image attachment
+    pub fn add_attachment(&mut self, attachment: ImageAttachment) {
+        self.attachments.push(attachment);
+        // Don't auto-select, user stays in input mode
+    }
+
+    /// Clear all attachments
+    pub fn clear_attachments(&mut self) {
+        self.attachments.clear();
+        self.selected_attachment = None;
+    }
+
+    /// Check if there are any attachments
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
+    }
+
+    /// Select the attachment list (move focus up from input)
+    pub fn select_attachments(&mut self) {
+        if !self.attachments.is_empty() {
+            self.selected_attachment = Some(self.attachments.len() - 1);
+        }
+    }
+
+    /// Deselect attachments (move focus back to input)
+    pub fn deselect_attachments(&mut self) {
+        self.selected_attachment = None;
+    }
+
+    /// Move attachment selection left
+    pub fn attachment_left(&mut self) {
+        if let Some(idx) = self.selected_attachment {
+            if idx > 0 {
+                self.selected_attachment = Some(idx - 1);
+            }
+        }
+    }
+
+    /// Move attachment selection right
+    pub fn attachment_right(&mut self) {
+        if let Some(idx) = self.selected_attachment {
+            if idx + 1 < self.attachments.len() {
+                self.selected_attachment = Some(idx + 1);
+            }
+        }
+    }
+
+    /// Delete the currently selected attachment
+    pub fn delete_selected_attachment(&mut self) {
+        if let Some(idx) = self.selected_attachment {
+            if idx < self.attachments.len() {
+                self.attachments.remove(idx);
+                // Adjust selection
+                if self.attachments.is_empty() {
+                    self.selected_attachment = None;
+                } else if idx >= self.attachments.len() {
+                    self.selected_attachment = Some(self.attachments.len() - 1);
+                }
+            }
         }
     }
 
@@ -366,6 +442,113 @@ impl App {
         if self.cursor_position < self.input_buffer.len() {
             self.cursor_position += 1;
         }
+    }
+
+    /// Move cursor to start of input
+    pub fn input_home(&mut self) {
+        self.cursor_position = 0;
+    }
+
+    /// Move cursor to end of input
+    pub fn input_end(&mut self) {
+        self.cursor_position = self.input_buffer.len();
+    }
+
+    /// Move cursor to the start of the previous word
+    pub fn input_word_left(&mut self) {
+        if self.cursor_position == 0 {
+            return;
+        }
+
+        let bytes = self.input_buffer.as_bytes();
+        let mut pos = self.cursor_position;
+
+        // Skip any whitespace immediately before cursor
+        while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+
+        // Skip the word (non-whitespace characters)
+        while pos > 0 && !bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+
+        self.cursor_position = pos;
+    }
+
+    /// Move cursor to the end of the next word
+    pub fn input_word_right(&mut self) {
+        let len = self.input_buffer.len();
+        if self.cursor_position >= len {
+            return;
+        }
+
+        let bytes = self.input_buffer.as_bytes();
+        let mut pos = self.cursor_position;
+
+        // Skip any whitespace at cursor
+        while pos < len && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // Skip the word (non-whitespace characters)
+        while pos < len && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        self.cursor_position = pos;
+    }
+
+    /// Delete the word before cursor
+    pub fn input_delete_word_back(&mut self) {
+        if self.cursor_position == 0 {
+            return;
+        }
+
+        let start = self.cursor_position;
+        self.input_word_left();
+        let end = self.cursor_position;
+
+        // Remove the characters between new position and old position
+        self.input_buffer.drain(end..start);
+    }
+
+    /// Delete the word after cursor
+    pub fn input_delete_word_forward(&mut self) {
+        let len = self.input_buffer.len();
+        if self.cursor_position >= len {
+            return;
+        }
+
+        let start = self.cursor_position;
+
+        // Find end of word
+        let bytes = self.input_buffer.as_bytes();
+        let mut end = start;
+
+        // Skip any whitespace at cursor
+        while end < len && bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+
+        // Skip the word (non-whitespace characters)
+        while end < len && !bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+
+        // Remove the characters
+        self.input_buffer.drain(start..end);
+    }
+
+    /// Delete from cursor to end of line
+    pub fn input_kill_line(&mut self) {
+        self.input_buffer.truncate(self.cursor_position);
+    }
+
+    /// Delete from cursor to start of line
+    pub fn input_kill_to_start(&mut self) {
+        self.input_buffer.drain(..self.cursor_position);
+        self.cursor_position = 0;
     }
 
     /// Take the input buffer (clears it)

@@ -42,6 +42,35 @@ pub enum SessionState {
     AwaitingPermission,
 }
 
+/// Permission handling mode for a session
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum PermissionMode {
+    #[default]
+    Normal,    // Ask for each permission
+    Plan,      // Plan mode - more cautious
+    AcceptAll, // Auto-accept all permissions
+}
+
+impl PermissionMode {
+    /// Cycle to the next mode
+    pub fn next(self) -> Self {
+        match self {
+            PermissionMode::Normal => PermissionMode::Plan,
+            PermissionMode::Plan => PermissionMode::AcceptAll,
+            PermissionMode::AcceptAll => PermissionMode::Normal,
+        }
+    }
+
+    /// Display name for the mode
+    pub fn display(&self) -> &'static str {
+        match self {
+            PermissionMode::Normal => "normal",
+            PermissionMode::Plan => "plan",
+            PermissionMode::AcceptAll => "accept all",
+        }
+    }
+}
+
 impl SessionState {
     pub fn display(&self) -> &'static str {
         match self {
@@ -107,6 +136,8 @@ pub struct Session {
     pub pending_permission: Option<PendingPermission>,
     pub plan_entries: Vec<PlanEntry>,
     pub current_mode: Option<String>,
+    pub active_tool_call_id: Option<String>,
+    pub permission_mode: PermissionMode,
 }
 
 #[derive(Debug, Clone)]
@@ -115,12 +146,20 @@ pub struct OutputLine {
     pub line_type: OutputType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutputType {
     Text,       // Agent response text
     UserInput,  // User's prompt
-    ToolCall,
-    ToolResult,
+    ToolCall {
+        tool_call_id: String,
+        name: String,
+        description: Option<String>,
+    },
+    ToolOutput,  // Output from a tool (shown with └ connector)
+    DiffAdd,     // Added line in diff (green)
+    DiffRemove,  // Removed line in diff (red)
+    DiffContext, // Context line in diff (dim)
+    DiffHeader,  // Diff header line (e.g. "Added 18 lines, removed 11")
     Error,
 }
 
@@ -141,7 +180,14 @@ impl Session {
             pending_permission: None,
             plan_entries: vec![],
             current_mode: None,
+            active_tool_call_id: None,
+            permission_mode: PermissionMode::default(),
         }
+    }
+
+    /// Cycle to the next permission mode
+    pub fn cycle_permission_mode(&mut self) {
+        self.permission_mode = self.permission_mode.next();
     }
 
     /// Scroll up by n lines
@@ -172,7 +218,7 @@ impl Session {
     pub fn append_text(&mut self, text: String) {
         if let Some(last) = self.output.last_mut() {
             // Only append to non-empty text lines (empty lines are for spacing)
-            if last.line_type == OutputType::Text && !last.content.is_empty() {
+            if matches!(last.line_type, OutputType::Text) && !last.content.is_empty() {
                 last.content.push_str(&text);
                 self.last_activity = Some(Instant::now());
                 return;
@@ -180,6 +226,81 @@ impl Session {
         }
         // No text line to append to, create new one
         self.add_output(text, OutputType::Text);
+    }
+
+    /// Check if a tool call with this ID already exists
+    pub fn has_tool_call(&self, tool_call_id: &str) -> bool {
+        self.output.iter().rev().any(|line| {
+            matches!(&line.line_type, OutputType::ToolCall { tool_call_id: id, .. } if id == tool_call_id)
+        })
+    }
+
+    /// Add or update a tool call in output
+    /// If a tool call with the same ID already exists, update it (for progressive disclosure)
+    pub fn add_tool_call(&mut self, tool_call_id: String, name: String, description: Option<String>) {
+        // Check if we already have this tool call - if so, update it
+        for line in self.output.iter_mut().rev() {
+            if let OutputType::ToolCall { tool_call_id: existing_id, name: existing_name, description: existing_desc } = &mut line.line_type {
+                if existing_id == &tool_call_id {
+                    // Update with better info if available
+                    if description.is_some() && existing_desc.is_none() {
+                        *existing_desc = description;
+                    }
+                    // Update name if we got a more specific one
+                    if name != "Tool" && (existing_name == "Tool" || existing_name == "Read File" || existing_name == "Edit" || existing_name == "Terminal") {
+                        *existing_name = name;
+                    }
+                    self.last_activity = Some(Instant::now());
+                    return;
+                }
+            }
+        }
+
+        // New tool call - add it
+        self.active_tool_call_id = Some(tool_call_id.clone());
+        self.output.push(OutputLine {
+            content: String::new(),
+            line_type: OutputType::ToolCall { tool_call_id, name, description },
+        });
+        self.last_activity = Some(Instant::now());
+    }
+
+    /// Mark the current tool as complete
+    pub fn complete_active_tool(&mut self) {
+        self.active_tool_call_id = None;
+    }
+
+    /// Add tool output, parsing for diff content
+    pub fn add_tool_output(&mut self, content: String) {
+        // Skip status-only lines like "completed", "running", etc.
+        let dominated = content.trim().to_lowercase();
+        if dominated == "completed" || dominated == "running" || dominated == "pending" {
+            return;
+        }
+
+        // Check if this looks like diff content
+        for line in content.lines() {
+            let trimmed = line.trim_start();
+            let line_type = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+                OutputType::DiffAdd
+            } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+                OutputType::DiffRemove
+            } else if trimmed.starts_with("@@") || trimmed.starts_with("diff ")
+                    || trimmed.starts_with("index ") || trimmed.starts_with("---")
+                    || trimmed.starts_with("+++") {
+                OutputType::DiffHeader
+            } else if line.starts_with("Added ") || line.starts_with("Removed ")
+                    || line.contains(" lines,") {
+                OutputType::DiffHeader
+            } else {
+                OutputType::ToolOutput
+            };
+            self.output.push(OutputLine {
+                content: line.to_string(),
+                line_type,
+            });
+        }
+        self.last_activity = Some(Instant::now());
     }
 
     /// Create a mock session for UI development
@@ -199,6 +320,8 @@ impl Session {
             pending_permission: None,
             plan_entries: vec![],
             current_mode: None,
+            active_tool_call_id: None,
+            permission_mode: PermissionMode::default(),
         }
     }
 }

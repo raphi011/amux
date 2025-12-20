@@ -53,6 +53,8 @@ pub struct AgentConnection {
     child: Child,
     request_id: u64,
     tx: mpsc::Sender<String>,
+    /// Track the current prompt request ID for cancellation
+    current_prompt_id: Option<u64>,
 }
 
 impl AgentConnection {
@@ -309,9 +311,17 @@ impl AgentConnection {
                             if let Some(params) = params {
                                 match serde_json::from_value::<TerminalCreateParams>(params.clone()) {
                                     Ok(term_params) => {
-                                        // Execute the command
-                                        let mut cmd = std::process::Command::new(&term_params.command);
-                                        cmd.args(&term_params.args);
+                                        // Build the full command with args
+                                        let full_command = if term_params.args.is_empty() {
+                                            term_params.command.clone()
+                                        } else {
+                                            format!("{} {}", term_params.command, term_params.args.join(" "))
+                                        };
+
+                                        // Execute through shell to support pipes, redirects, etc.
+                                        let mut cmd = std::process::Command::new("sh");
+                                        cmd.arg("-c");
+                                        cmd.arg(&full_command);
                                         if let Some(cwd) = &term_params.cwd {
                                             cmd.current_dir(cwd);
                                         }
@@ -524,6 +534,7 @@ impl AgentConnection {
             child,
             request_id: 0,
             tx,
+            current_prompt_id: None,
         })
     }
 
@@ -604,12 +615,48 @@ impl AgentConnection {
             }],
         };
 
+        let id = self.next_id();
+        self.current_prompt_id = Some(id);
         let request = JsonRpcRequest::new(
-            self.next_id(),
+            id,
             "session/prompt",
             Some(serde_json::to_value(params)?),
         );
         self.send(request).await
+    }
+
+    /// Send a prompt with arbitrary content blocks (text, images, etc.)
+    pub async fn prompt_with_content(&mut self, session_id: &str, content: Vec<ContentBlock>) -> Result<()> {
+        let params = PromptParams {
+            session_id: session_id.to_string(),
+            prompt: content,
+        };
+
+        let id = self.next_id();
+        self.current_prompt_id = Some(id);
+        let request = JsonRpcRequest::new(
+            id,
+            "session/prompt",
+            Some(serde_json::to_value(params)?),
+        );
+        self.send(request).await
+    }
+
+    /// Cancel the current prompt if one is in progress
+    pub async fn cancel_prompt(&mut self) -> Result<()> {
+        if let Some(prompt_id) = self.current_prompt_id.take() {
+            // Send $/cancel_request notification
+            let notification = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancel_request",
+                "params": {
+                    "id": prompt_id
+                }
+            });
+            let json = serde_json::to_string(&notification)?;
+            self.tx.send(json).await?;
+        }
+        Ok(())
     }
 
     /// Respond to a permission request

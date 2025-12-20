@@ -1,12 +1,13 @@
 mod acp;
 mod app;
+mod clipboard;
 mod log;
 mod session;
 mod tui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyCode, KeyEventKind, KeyModifiers, EventStream},
+    event::{Event, KeyCode, KeyEventKind, KeyModifiers, EventStream, EnableBracketedPaste, DisableBracketedPaste},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -17,9 +18,10 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId};
-use app::{App, FolderEntry, InputMode};
-use session::{AgentType, OutputType, SessionState, PendingPermission};
+use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock};
+use app::{App, FolderEntry, InputMode, ImageAttachment};
+use clipboard::ClipboardContent;
+use session::{AgentType, OutputType, SessionState, PendingPermission, PermissionMode};
 
 /// Get the current git branch for a directory
 async fn get_git_branch(cwd: &std::path::Path) -> String {
@@ -98,7 +100,9 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
 /// Command to send to an agent
 enum AgentCommand {
     Prompt { session_id: String, text: String },
+    PromptWithContent { session_id: String, content: Vec<ContentBlock> },
     PermissionResponse { request_id: u64, option_id: Option<PermissionOptionId> },
+    CancelPrompt,
 }
 
 /// Info for resuming a session
@@ -115,22 +119,36 @@ async fn main() -> Result<()> {
         log::log(&format!("Log file: {}", log_path.display()));
     }
 
+    // Parse CLI arguments - optional starting directory
+    let args: Vec<String> = std::env::args().collect();
+    let start_dir = if args.len() > 1 {
+        let path = std::path::PathBuf::from(&args[1]);
+        if path.is_dir() {
+            path.canonicalize().unwrap_or(path)
+        } else {
+            eprintln!("Warning: '{}' is not a valid directory, using current directory", args[1]);
+            std::env::current_dir().unwrap_or_default()
+        }
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new();
+    let mut app = App::new(start_dir);
 
     // Run the app
     let result = run_app(&mut terminal, &mut app).await;
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -155,9 +173,22 @@ where
 
         // Handle events with timeout for responsiveness
         tokio::select! {
-            // Keyboard events
+            // Terminal events (keyboard, paste, etc.)
             maybe_event = event_stream.next() => {
-                if let Some(Ok(Event::Key(key))) = maybe_event {
+                if let Some(Ok(event)) = maybe_event {
+                    // Handle paste events (from drag & drop or Cmd+V in some terminals)
+                    if let Event::Paste(text) = &event {
+                        if app.input_mode == InputMode::Insert {
+                            // Insert pasted text into input buffer
+                            for c in text.chars() {
+                                app.input_char(c);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Handle key events
+                    if let Event::Key(key) = event {
                     if key.kind == KeyEventKind::Press {
                         match app.input_mode {
                             InputMode::Normal => {
@@ -229,7 +260,27 @@ where
                                     match key.code {
                                         KeyCode::Char('q') => return Ok(()),
                                         KeyCode::Esc => {
-                                            // Escape does nothing in normal mode (focus stays on list)
+                                            // Cancel current prompt if session is working
+                                            let session_idx = app.sessions.selected_index();
+                                            let is_prompting = app.sessions.selected_session()
+                                                .map(|s| s.state == SessionState::Prompting)
+                                                .unwrap_or(false);
+                                            if is_prompting {
+                                                if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
+                                                }
+                                                if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                    session.add_output("⚠ Cancelled".to_string(), OutputType::Text);
+                                                    session.state = SessionState::Idle;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Tab => {
+                                            // Cycle permission mode for selected session
+                                            let session_idx = app.sessions.selected_index();
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                session.cycle_permission_mode();
+                                            }
                                         }
                                         // Number keys to select session directly
                                         KeyCode::Char(c @ '1'..='9') => {
@@ -244,10 +295,10 @@ where
                                             }
                                         }
                                         KeyCode::Char('n') => {
-                                            // Open folder picker
-                                            let cwd = std::env::current_dir().unwrap_or_default();
-                                            app.open_folder_picker(cwd.clone());
-                                            let entries = scan_folder_entries(&cwd).await;
+                                            // Open folder picker starting from configured directory
+                                            let start = app.start_dir.clone();
+                                            app.open_folder_picker(start.clone());
+                                            let entries = scan_folder_entries(&start).await;
                                             app.set_folder_entries(entries);
                                         }
                                         KeyCode::Char('x') => {
@@ -407,30 +458,178 @@ where
                                 match key.code {
                                     KeyCode::Esc => {
                                         app.exit_insert_mode();
+                                        app.clear_attachments();
+                                    }
+                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+C: clear input and exit insert mode
+                                        app.take_input();
+                                        app.clear_attachments();
+                                        app.exit_insert_mode();
                                     }
                                     KeyCode::Enter => {
                                         let text = app.take_input();
-                                        if !text.is_empty() {
+                                        if !text.is_empty() || app.has_attachments() {
                                             send_prompt(app, &agent_commands, &text).await;
                                         }
                                         app.exit_insert_mode();
                                     }
-                                    KeyCode::Backspace => app.input_backspace(),
-                                    KeyCode::Delete => app.input_delete(),
-                                    KeyCode::Left => app.input_left(),
-                                    KeyCode::Right => app.input_right(),
-                                    KeyCode::Char(c) => app.input_char(c),
+                                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+V: paste from clipboard
+                                        match clipboard::read_clipboard() {
+                                            Ok(ClipboardContent::Image { data, mime_type }) => {
+                                                app.add_attachment(ImageAttachment {
+                                                    filename: "clipboard".to_string(), // Shows as "Image #N" in UI
+                                                    mime_type,
+                                                    data,
+                                                });
+                                            }
+                                            Ok(ClipboardContent::Text(text)) => {
+                                                // Check if it's a path to an image file
+                                                if let Some(path) = clipboard::try_parse_image_path(&text) {
+                                                    if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
+                                                        app.add_attachment(ImageAttachment {
+                                                            filename,
+                                                            mime_type,
+                                                            data,
+                                                        });
+                                                    } else {
+                                                        // Not a valid image, paste as text
+                                                        for c in text.chars() {
+                                                            app.input_char(c);
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Regular text, paste it
+                                                    for c in text.chars() {
+                                                        app.input_char(c);
+                                                    }
+                                                }
+                                            }
+                                            Ok(ClipboardContent::None) | Err(_) => {}
+                                        }
+                                    }
+                                    KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+X: clear all attachments
+                                        app.clear_attachments();
+                                    }
+                                    // Word/line navigation
+                                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+A: jump to start of line
+                                        app.input_home();
+                                    }
+                                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+E: jump to end of line
+                                        app.input_end();
+                                    }
+                                    KeyCode::Home => app.input_home(),
+                                    KeyCode::End => app.input_end(),
+                                    KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+Left: move word left
+                                        app.input_word_left();
+                                    }
+                                    KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+Right: move word right
+                                        app.input_word_right();
+                                    }
+                                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+B: move word left (emacs style)
+                                        app.input_word_left();
+                                    }
+                                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+F: move word right (emacs style)
+                                        app.input_word_right();
+                                    }
+                                    // Word/line deletion
+                                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+W: delete word before cursor
+                                        app.input_delete_word_back();
+                                    }
+                                    KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+Backspace: delete word before cursor
+                                        app.input_delete_word_back();
+                                    }
+                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        // Alt+D: delete word after cursor
+                                        app.input_delete_word_forward();
+                                    }
+                                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+K: delete to end of line
+                                        app.input_kill_line();
+                                    }
+                                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+U: delete to start of line
+                                        app.input_kill_to_start();
+                                    }
+                                    // Attachment navigation
+                                    KeyCode::Up => {
+                                        // Move to attachment selection if there are attachments
+                                        if app.has_attachments() && app.selected_attachment.is_none() {
+                                            app.select_attachments();
+                                        }
+                                    }
+                                    KeyCode::Down => {
+                                        // Move back to input from attachment selection
+                                        if app.selected_attachment.is_some() {
+                                            app.deselect_attachments();
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if app.selected_attachment.is_some() {
+                                            // Delete selected attachment
+                                            app.delete_selected_attachment();
+                                        } else {
+                                            app.input_backspace();
+                                        }
+                                    }
+                                    KeyCode::Delete => {
+                                        if app.selected_attachment.is_some() {
+                                            app.delete_selected_attachment();
+                                        } else {
+                                            app.input_delete();
+                                        }
+                                    }
+                                    KeyCode::Left => {
+                                        if app.selected_attachment.is_some() {
+                                            app.attachment_left();
+                                        } else {
+                                            app.input_left();
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if app.selected_attachment.is_some() {
+                                            app.attachment_right();
+                                        } else {
+                                            app.input_right();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        // Typing deselects attachment and goes back to input
+                                        if app.selected_attachment.is_some() {
+                                            app.deselect_attachments();
+                                        }
+                                        app.input_char(c);
+                                    }
                                     _ => {}
                                 }
                             }
                         }
                     }
+                    } // end Event::Key
                 }
             }
 
             // Agent events
             Some((session_idx, event)) = agent_rx.recv() => {
-                handle_agent_event(app, session_idx, event);
+                let result = handle_agent_event(app, session_idx, event);
+                // Handle auto-accept permission responses
+                if let EventResult::AutoAcceptPermission { request_id, option_id } = result {
+                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                        let _ = cmd_tx.send(AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id: Some(option_id),
+                        }).await;
+                    }
+                }
             }
 
             // Timeout to keep UI responsive and tick spinner
@@ -504,10 +703,24 @@ async fn spawn_agent_in_dir(
                                 }).await;
                             }
                         }
+                        AgentCommand::PromptWithContent { session_id, content } => {
+                            if let Err(e) = conn.prompt_with_content(&session_id, content).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Prompt failed: {}", e),
+                                }).await;
+                            }
+                        }
                         AgentCommand::PermissionResponse { request_id, option_id } => {
                             if let Err(e) = conn.respond_permission(request_id, option_id).await {
                                 let _ = event_tx.send(AgentEvent::Error {
                                     message: format!("Permission response failed: {}", e),
+                                }).await;
+                            }
+                        }
+                        AgentCommand::CancelPrompt => {
+                            if let Err(e) = conn.cancel_prompt().await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Cancel failed: {}", e),
                                 }).await;
                             }
                         }
@@ -592,10 +805,24 @@ async fn spawn_agent_with_resume(
                                 }).await;
                             }
                         }
+                        AgentCommand::PromptWithContent { session_id, content } => {
+                            if let Err(e) = conn.prompt_with_content(&session_id, content).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Prompt failed: {}", e),
+                                }).await;
+                            }
+                        }
                         AgentCommand::PermissionResponse { request_id, option_id } => {
                             if let Err(e) = conn.respond_permission(request_id, option_id).await {
                                 let _ = event_tx.send(AgentEvent::Error {
                                     message: format!("Permission response failed: {}", e),
+                                }).await;
+                            }
+                        }
+                        AgentCommand::CancelPrompt => {
+                            if let Err(e) = conn.cancel_prompt().await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Cancel failed: {}", e),
                                 }).await;
                             }
                         }
@@ -620,22 +847,69 @@ async fn send_prompt(
 ) {
     let session_idx = app.sessions.selected_index();
 
+    // Take attachments before borrowing session
+    let attachments = std::mem::take(&mut app.attachments);
+    let has_attachments = !attachments.is_empty();
+
     if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-        // Add user message to output
-        session.add_output(format!("> {}", text), OutputType::UserInput);
+        // Add spacing before user message
+        session.add_output(String::new(), OutputType::Text);
+
+        // Show user input with attachment indicator
+        if has_attachments {
+            let attachment_names: Vec<_> = attachments.iter().map(|a| a.filename.as_str()).collect();
+            session.add_output(
+                format!("> {} [+{}]", text, attachment_names.join(", ")),
+                OutputType::UserInput,
+            );
+        } else {
+            session.add_output(format!("> {}", text), OutputType::UserInput);
+        }
         session.state = SessionState::Prompting;
 
-        // Send command to agent
-        if let Some(cmd_tx) = agent_commands.get(&session_idx) {
-            let _ = cmd_tx.send(AgentCommand::Prompt {
-                session_id: session.id.clone(),
-                text: text.to_string(),
-            }).await;
+        // Build content blocks
+        if has_attachments {
+            let mut content: Vec<ContentBlock> = vec![];
+
+            // Add text if present
+            if !text.is_empty() {
+                content.push(ContentBlock::Text { text: text.to_string() });
+            }
+
+            // Add image attachments
+            for attachment in attachments {
+                content.push(ContentBlock::Image {
+                    mime_type: attachment.mime_type,
+                    data: attachment.data,
+                });
+            }
+
+            // Send with content blocks
+            if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                let _ = cmd_tx.send(AgentCommand::PromptWithContent {
+                    session_id: session.id.clone(),
+                    content,
+                }).await;
+            }
+        } else {
+            // Send simple text prompt
+            if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                let _ = cmd_tx.send(AgentCommand::Prompt {
+                    session_id: session.id.clone(),
+                    text: text.to_string(),
+                }).await;
+            }
         }
     }
 }
 
-fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) {
+/// Result of handling an agent event - may contain a command to send back
+enum EventResult {
+    None,
+    AutoAcceptPermission { request_id: u64, option_id: PermissionOptionId },
+}
+
+fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> EventResult {
     let viewport_height = app.viewport_height;
     if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
         match event {
@@ -662,18 +936,51 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) {
                             session.append_text(text);
                         }
                     }
-                    SessionUpdate::ToolCall { title, .. } => {
-                        let name = title
+                    SessionUpdate::ToolCall { tool_call_id, title, .. } => {
+                        let title_str = title
                             .filter(|t| t != "undefined" && !t.is_empty())
-                            .unwrap_or_else(|| "tool".to_string());
-                        // Add spacing before tool call
-                        session.add_output(String::new(), OutputType::Text);
-                        session.add_output(format!("[Tool: {}]", name), OutputType::ToolCall);
+                            .unwrap_or_else(|| "Tool".to_string());
+
+                        // Parse title like "Bash(git push)" into name and description
+                        let (name, description) = if let Some(paren_pos) = title_str.find('(') {
+                            let name = title_str[..paren_pos].to_string();
+                            let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
+                            // Strip backticks from description
+                            let desc = desc.trim_matches('`').to_string();
+                            (name, if desc.is_empty() { None } else { Some(desc) })
+                        } else if title_str.starts_with('`') && title_str.ends_with('`') {
+                            // Command in backticks like `cd /path && cargo build`
+                            let cmd = title_str.trim_matches('`').to_string();
+                            ("Bash".to_string(), Some(cmd))
+                        } else {
+                            // Map common tool names
+                            let mapped_name = match title_str.as_str() {
+                                "Terminal" => "Bash",
+                                "Read File" => "Read",
+                                "Write File" => "Write",
+                                "Edit File" => "Edit",
+                                other => other,
+                            };
+                            (mapped_name.to_string(), None)
+                        };
+
+                        // Only add spacing for new tool calls, not updates
+                        let is_new = !session.has_tool_call(&tool_call_id);
+                        if is_new {
+                            session.add_output(String::new(), OutputType::Text);
+                        }
+                        session.add_tool_call(tool_call_id, name, description);
                     }
-                    SessionUpdate::ToolCallUpdate { status, .. } => {
-                        // Only show non-empty status updates
-                        if !status.trim().is_empty() {
-                            session.add_output(format!("  → {}", status), OutputType::ToolResult);
+                    SessionUpdate::ToolCallUpdate { tool_call_id, status } => {
+                        // Check if this tool is completing
+                        if status == "completed" {
+                            // Mark the tool as complete if it's the active one
+                            if session.active_tool_call_id.as_ref() == Some(&tool_call_id) {
+                                session.complete_active_tool();
+                            }
+                        } else if !status.trim().is_empty() && status != "in_progress" && status != "pending" {
+                            // Only show meaningful status updates (not lifecycle states)
+                            session.add_tool_output(status);
                         }
                     }
                     SessionUpdate::Plan { entries } => {
@@ -697,6 +1004,21 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) {
                 options,
                 ..
             } => {
+                // Check if we should auto-accept (AcceptAll mode)
+                if session.permission_mode == PermissionMode::AcceptAll {
+                    // Find the first allow_once option
+                    if let Some(option) = options.iter().find(|o| o.kind == crate::acp::PermissionKind::AllowOnce) {
+                        session.state = SessionState::Prompting;
+                        // Auto-scroll to bottom
+                        session.scroll_to_bottom(viewport_height);
+                        return EventResult::AutoAcceptPermission {
+                            request_id,
+                            option_id: PermissionOptionId::from(option.option_id.clone()),
+                        };
+                    }
+                }
+
+                // Normal mode - show permission dialog
                 session.state = SessionState::AwaitingPermission;
                 session.pending_permission = Some(PendingPermission {
                     request_id,
@@ -709,6 +1031,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) {
             AgentEvent::PromptComplete { .. } => {
                 session.state = SessionState::Idle;
                 session.pending_permission = None;
+                session.complete_active_tool();
                 // Add blank line after response for spacing
                 session.add_output(String::new(), OutputType::Text);
             }
@@ -724,4 +1047,5 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) {
         // Auto-scroll to bottom on new output
         session.scroll_to_bottom(viewport_height);
     }
+    EventResult::None
 }
