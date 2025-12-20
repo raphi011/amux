@@ -229,10 +229,9 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
         ];
 
-        // Show worktree indicator
+        // Show worktree indicator (compact)
         if session.is_worktree {
-            second_spans.push(Span::raw("  "));
-            second_spans.push(Span::styled("worktree", Style::new().fg(TEXT_DIM)));
+            second_spans.push(Span::styled(" (wt)", Style::new().fg(TEXT_DIM)));
         }
 
         // Show mode if set (e.g., "plan")
