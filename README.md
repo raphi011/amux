@@ -2,8 +2,6 @@
 
 A terminal multiplexer for AI coding agents. Run multiple AI agents side-by-side in a single terminal, manage their sessions, and interact with them through a unified TUI.
 
-![amux UI](./ui.png)
-
 ## What is amux?
 
 amux (agent multiplexer) lets you spawn and manage multiple AI coding agents in one terminal window. Think of it as tmux, but purpose-built for AI agents. Instead of juggling multiple terminal tabs or windows for each agent, amux provides a unified interface where you can:
