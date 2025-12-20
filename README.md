@@ -1,90 +1,97 @@
 # amux
 
-A TUI (Terminal User Interface) application for monitoring and managing multiple Claude Code agent instances.
+A terminal multiplexer for AI coding agents. Run multiple AI agents side-by-side in a single terminal, manage their sessions, and interact with them through a unified TUI.
+
+![amux UI](./ui.png)
+
+## What is amux?
+
+amux (agent multiplexer) lets you spawn and manage multiple AI coding agents in one terminal window. Think of it as tmux, but purpose-built for AI agents. Instead of juggling multiple terminal tabs or windows for each agent, amux provides a unified interface where you can:
+
+- Run multiple agents simultaneously (Claude Code, Gemini CLI)
+- Switch between agent sessions instantly
+- Monitor all agents at a glance
+- Handle permission requests across sessions
+
+## How it works
+
+amux uses the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) to communicate with AI agents. ACP is a standardized protocol that enables structured communication between clients and AI coding assistants over JSON-RPC.
+
+When you start a new session, amux:
+
+1. Spawns the agent process (e.g., `claude-code-acp` or `gemini --experimental-acp`)
+2. Establishes a bidirectional JSON-RPC connection over stdio
+3. Handles all ACP messages: prompts, streaming responses, tool calls, and permission requests
+4. Renders the agent's output with markdown formatting in the terminal
+
+The architecture follows a session manager pattern where each agent runs in its own async task, with all events funneled through a central event loop for UI updates.
 
 ## Features
 
-- Spawns agents: Spawns new agents (claude code, gemini cli)
-- Real-time Status: Shows current task, status, and last activity for each agent
-- Keyboard Navigation: Vim-style shortcuts for efficient navigation
-- Leverages [Zed Agent Client Protocol](https://zed.dev/acp)
-- Git worktree support. Manage multiple worktrees, spawn agents in each worktree
-- List / Detail view. List of all running agents, detailed view of each agent output
+- **Multi-agent support** - Run Claude Code and Gemini CLI agents simultaneously
+- **Session management** - Create, switch, and kill agent sessions on the fly
+- **Real-time streaming** - See agent responses as they're generated
+- **Permission handling** - Approve or reject file system and terminal operations
+- **Markdown rendering** - Agent output is rendered with proper formatting
+- **Git worktree integration** - Spawn agents in different worktrees, easily switch between them
+- **Vim-style navigation** - Familiar keybindings for fast navigation
+- **Scroll history** - Scroll through agent output with page up/down
+- **Clipboard support** - Copy agent output to clipboard
+- **Debug logging** - Detailed logs for troubleshooting in `~/.amux/logs/`
 
-## Technical plan
+## Installation
 
-ACP CLI Multiplexer - Implementation Summary
-Goal
-Build a tmux-like CLI tool in Rust that spawns multiple ACP (Agent Client Protocol) agents, manages their sessions, and renders their output in a TUI.
-Architecture
-┌────────────────────────────────────────────┐
-│              CLI (TUI)                     │
-│  ┌──────────────────────────────────────┐  │
-│  │          Session Manager             │  │
-│  │  - spawn/kill agents                 │  │
-│  │  - route input to focused session    │  │
-│  │  - track state per session           │  │
-│  └──────────────┬───────────────────────┘  │
-│                 │                          │
-│  ┌──────────────┴───────────────────────┐  │
-│  │         ACP Connection Pool          │  │
-│  │  session_1: Claude Code (IDLE)       │  │
-│  │  session_2: Gemini CLI (WORKING)     │  │
-│  │  session_3: Custom Agent (TOOL)      │  │
-│  └──────────────────────────────────────┘  │
-└────────────────────────────────────────────┘
-         │            │            │
-       stdio        stdio        stdio
-         ▼            ▼            ▼
-      Agent 1      Agent 2      Agent 3
-Per-Session State Machine
-SPAWNING → INITIALIZING → IDLE ⇄ PROMPTING
-                            ↓
-                     AWAITING_PERMISSION
-State transitions:
+### From source
 
-IDLE → PROMPTING: send session/prompt
-PROMPTING → IDLE: receive PromptResponse(stop_reason: end_turn)
-PROMPTING → AWAITING_PERMISSION: agent sends session/request_permission
-AWAITING_PERMISSION → PROMPTING: respond to permission request
+```bash
+git clone https://github.com/raphi011/amux.git
+cd amux
+cargo build --release
+```
 
-TUI Layout
-┌─ Sessions ──────────────────────────────────┐
-│ [1] claude-code    IDLE                     │
-│ [2] gemini-cli     ● streaming...           │
-│ [3] my-agent       ⚠ permission required    │
-├─ Output (session 2) ────────────────────────┤
-│ I'll analyze the codebase structure...      │
-│ [tool: read_file] src/main.rs ✓             │
-├─ Input ─────────────────────────────────────┤
-│ > _                                         │
-└─────────────────────────────────────────────┘
-Layout structure:
+The binary will be at `target/release/amux`.
 
-Horizontal split: sidebar (fixed 30 chars) | main content
-Vertical split on main: agent output (flex) | status bar (1 line)
+### Requirements
 
-Dependencies
-toml[dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
-tokio = { version = "1", features = ["full"] }
-agent-client-protocol = "0.1"
+You'll need at least one supported agent installed:
 
-# Optional helpers
-tui-textarea = "0.7"    # input widget with cursor/history
-tui-scrollview = "0.4"  # scrollable output viewport
-Key Implementation Details
+| Agent | Installation |
+|-------|--------------|
+| Claude Code | `npx @anthropic-ai/claude-code-acp` |
+| Gemini CLI | `npm install -g @google/gemini-cli` |
 
-Async multiplexing: One tokio task per agent reading stdout, all feeding into a central mpsc channel
-Event loop: Single loop handling agent updates + keyboard input, updating state and triggering re-renders
-ACP protocol: Agents communicate via JSON-RPC over stdio; use stop_reason in PromptResponse to detect idle state
-Rendering: Buffer session_update chunks per session, render focused session, show status badges on others
+## Usage
 
-ACP Protocol Reference
+Start amux in any directory:
 
-Spec: https://agentclientprotocol.com
-Key messages: initialize, session/new, session/prompt, session/update (notification), session/request_permission
-Stop reasons: end_turn (idle), cancelled, max_tokens
+```bash
+amux
+```
 
-Create a UI similar to the [screenshot](./ui.png)
+Or specify a directory:
+
+```bash
+amux /path/to/project
+```
+
+### Key bindings
+
+| Key | Action |
+|-----|--------|
+| `n` | New session |
+| `x` | Kill current session |
+| `j/k` | Navigate sessions |
+| `1-9` | Jump to session by number |
+| `i` | Insert mode (type message) |
+| `Esc` | Normal mode |
+| `Enter` | Send message (insert mode) |
+| `Ctrl+u/d` | Scroll half page |
+| `Ctrl+b/f` | Scroll full page |
+| `g/G` | Scroll to top/bottom |
+| `y` or `Enter` | Allow permission |
+| `n` or `Esc` | Reject permission |
+| `q` | Quit |
+
+## License
+
+MIT
