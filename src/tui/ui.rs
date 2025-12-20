@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         (wrapped_lines + 1 + attachment_line) as u16
     };
 
-    // Right side: output + permission/input
+    // Right side: output + separator + permission/input
     let right_layout = if has_permission {
         Layout::vertical([
             Constraint::Min(0),     // Output
@@ -71,14 +71,19 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Layout::vertical([
             Constraint::Min(0),                      // Output
+            Constraint::Length(1),                   // Empty line above separator
+            Constraint::Length(1),                   // Horizontal separator
+            Constraint::Length(1),                   // Empty line below separator
             Constraint::Length(input_height.max(2)), // Input bar (min 2 lines: input + mode)
         ])
         .split(content_layout[4])
     };
 
-    // Render folder picker, agent picker, session picker, or output area
-    if app.input_mode == InputMode::FolderPicker {
+    // Render folder picker, agent picker, session picker, branch input, or output area
+    if app.input_mode == InputMode::FolderPicker || app.input_mode == InputMode::WorktreeFolderPicker {
         render_folder_picker(frame, right_layout[0], app);
+    } else if app.input_mode == InputMode::BranchInput {
+        render_branch_input(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::AgentPicker {
         render_agent_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::SessionPicker {
@@ -91,7 +96,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     if has_permission {
         render_permission_dialog(frame, right_layout[1], app);
     } else {
-        render_input_bar(frame, right_layout[1], app);
+        // Render horizontal separator (index 1 is empty, 2 is separator, 3 is empty, 4 is input)
+        render_horizontal_separator(frame, right_layout[2]);
+        render_input_bar(frame, right_layout[4], app);
+    }
+
+    // Render help popup on top if in Help mode
+    if app.input_mode == InputMode::Help {
+        render_help_popup(frame, area);
     }
 }
 
@@ -101,6 +113,14 @@ fn render_separator(frame: &mut Frame, area: Rect) {
         .map(|_| Line::styled("│", Style::new().fg(TEXT_DIM)))
         .collect();
     let paragraph = Paragraph::new(separator);
+    frame.render_widget(paragraph, area);
+}
+
+fn render_horizontal_separator(frame: &mut Frame, area: Rect) {
+    // Draw a horizontal line of ─ characters
+    let separator = "─".repeat(area.width as usize);
+    let line = Line::styled(separator, Style::new().fg(TEXT_DIM));
+    let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
 }
 
@@ -128,10 +148,10 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
         let is_selected = i == app.sessions.selected_index();
         let cursor = if is_selected { "> " } else { "  " };
 
-        // Agent type icon
-        let (agent_icon, agent_color) = match session.agent_type {
-            AgentType::ClaudeCode => ("", LOGO_CORAL),
-            AgentType::GeminiCli => ("", LOGO_LIGHT_BLUE),
+        // Agent type color for second line
+        let agent_color = match session.agent_type {
+            AgentType::ClaudeCode => LOGO_CORAL,
+            AgentType::GeminiCli => LOGO_LIGHT_BLUE,
         };
 
         // Activity indicator for working sessions (animated spinner)
@@ -141,13 +161,24 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             String::new()
         };
 
-        // First line: cursor + number + agent icon + name + activity
+        // Compute relative path from start_dir, or use session name as fallback
+        let display_path = if let Ok(rel) = session.cwd.strip_prefix(&app.start_dir) {
+            if rel.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                format!("./{}", rel.display())
+            }
+        } else {
+            // Fallback to just the session name if not under start_dir
+            session.name.clone()
+        };
+
+        // First line: cursor + number + relative path + activity
         let first_line = Line::from(vec![
             Span::raw(cursor),
             Span::styled(format!("{}. ", i + 1), Style::new().fg(TEXT_DIM)),
-            Span::styled(format!("{} ", agent_icon), Style::new().fg(agent_color)),
             Span::styled(
-                session.name.clone(),
+                display_path,
                 if is_selected {
                     Style::new().fg(TEXT_WHITE).bold()
                 } else {
@@ -157,9 +188,12 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
         ]);
 
-        // Second line: branch + mode
+        // Second line: agent name + branch + mode
+        let agent_name = session.agent_type.display_name();
         let mut second_spans = vec![
             Span::raw("   "),
+            Span::styled(agent_name, Style::new().fg(agent_color)),
+            Span::raw("  "),
             Span::styled("🌿 ", Style::new().fg(BRANCH_GREEN)),
             Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
         ];
@@ -182,67 +216,13 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
         session_lines.push(Line::styled("Press [n] to create one", Style::new().fg(TEXT_DIM)));
     }
 
-    // Build hotkey lines (split into two rows for sidebar)
-    let hotkey_lines: Vec<Line> = match app.input_mode {
-        InputMode::Normal => vec![
-            Line::from(vec![
-                Span::styled("[i]", Style::new().fg(TEXT_WHITE)),
-                Span::styled("nput ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[n]", Style::new().fg(TEXT_WHITE)),
-                Span::styled("ew ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[x]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" kill ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[q]", Style::new().fg(TEXT_WHITE)),
-                Span::styled("uit", Style::new().fg(TEXT_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled("[j/k]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" nav ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[C-u/d]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" scroll", Style::new().fg(TEXT_DIM)),
-            ]),
-        ],
-        InputMode::Insert => vec![
-            Line::from(vec![
-                Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" send ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled("[C-v]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" paste ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[C-x]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" clear imgs", Style::new().fg(TEXT_DIM)),
-            ]),
-        ],
-        InputMode::FolderPicker | InputMode::AgentPicker => vec![
-            Line::from(vec![
-                Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" select ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled("[j/k]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" navigate ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[h/l]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" back/enter", Style::new().fg(TEXT_DIM)),
-            ]),
-        ],
-        InputMode::SessionPicker => vec![
-            Line::from(vec![
-                Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" resume ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
-            ]),
-            Line::from(vec![
-                Span::styled("[j/k]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" navigate", Style::new().fg(TEXT_DIM)),
-            ]),
-        ],
-    };
+    // Help hint line at bottom of sidebar
+    let hotkey_lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" help", Style::new().fg(TEXT_DIM)),
+        ]),
+    ];
 
     // Build plan lines for selected session
     let mut plan_lines: Vec<Line> = vec![];
@@ -252,6 +232,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             let separator = "─".repeat(area.width.saturating_sub(2) as usize);
             plan_lines.push(Line::styled(separator, Style::new().fg(TEXT_DIM)));
             plan_lines.push(Line::styled("Tasks", Style::new().fg(TEXT_WHITE).bold()));
+            plan_lines.push(Line::raw("")); // Empty line after header
 
             // Plan entries
             for entry in &session.plan_entries {
@@ -368,22 +349,18 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
                             ])]
                         }
                         OutputType::ToolOutput => {
-                            // Tool output - └ connector with markdown rendering
-                            let skin = ratskin::RatSkin::default();
-                            let md_lines = skin.parse(
-                                ratskin::RatSkin::parse_text(&output_line.content),
-                                inner_width.saturating_sub(2) as u16
-                            );
-                            // Add └ connector to first line, indent others
-                            md_lines.into_iter().enumerate().map(|(i, mut line)| {
+                            // Tool output - └ connector, plain text (no markdown)
+                            let wrapped = wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                            wrapped.into_iter().enumerate().map(|(i, text)| {
                                 let prefix = if i == 0 {
                                     Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR))
                                 } else {
                                     Span::styled("  ", Style::new().fg(TOOL_CONNECTOR))
                                 };
-                                let mut spans = vec![prefix];
-                                spans.extend(line.spans.drain(..));
-                                Line::from(spans)
+                                Line::from(vec![
+                                    prefix,
+                                    Span::styled(text, Style::new().fg(TEXT_DIM)),
+                                ])
                             }).collect()
                         }
                         OutputType::DiffAdd => {
@@ -759,6 +736,101 @@ fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
+fn render_branch_input(frame: &mut Frame, area: Rect, app: &App) {
+    use ratatui::layout::Position;
+
+    let mut lines: Vec<Line> = vec![];
+
+    if let Some(branch_state) = &app.branch_input {
+        let repo_name = branch_state.repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+
+        // Header
+        lines.push(Line::from(vec![
+            Span::styled("Create worktree in ", Style::new().fg(TEXT_DIM)),
+            Span::styled(repo_name, Style::new().fg(LOGO_LIGHT_BLUE).bold()),
+        ]));
+        lines.push(Line::raw(""));
+
+        // Branch input line
+        lines.push(Line::from(vec![
+            Span::styled("Branch: ", Style::new().fg(TEXT_DIM)),
+            Span::styled(&branch_state.input, Style::new().fg(TEXT_WHITE)),
+        ]));
+
+        // Autocomplete dropdown
+        if branch_state.show_autocomplete && !branch_state.filtered.is_empty() {
+            lines.push(Line::raw(""));
+
+            let max_display = 8;
+            let start = if branch_state.selected >= max_display {
+                branch_state.selected - max_display + 1
+            } else {
+                0
+            };
+
+            for (i, branch) in branch_state.filtered.iter().enumerate().skip(start).take(max_display) {
+                let is_selected = i == branch_state.selected;
+                let cursor = if is_selected { "> " } else { "  " };
+
+                let (icon, color) = if branch.is_remote {
+                    ("󰅟 ", TEXT_DIM)  // Remote icon
+                } else if branch.is_current {
+                    ("󰘬 ", LOGO_MINT)  // Current branch indicator
+                } else {
+                    (" ", BRANCH_GREEN)  // Regular branch
+                };
+
+                let style = if is_selected {
+                    Style::new().fg(TEXT_WHITE).bold()
+                } else {
+                    Style::new().fg(color)
+                };
+
+                let mut spans = vec![
+                    Span::styled(cursor, style),
+                    Span::styled(icon, Style::new().fg(color)),
+                    Span::styled(&branch.name, style),
+                ];
+
+                if branch.is_current {
+                    spans.push(Span::styled(" (current)", Style::new().fg(TEXT_DIM)));
+                } else if branch.is_remote {
+                    spans.push(Span::styled(" (remote)", Style::new().fg(TEXT_DIM)));
+                }
+
+                lines.push(Line::from(spans));
+            }
+        }
+
+        // Help text
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("[Tab]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" complete · ", Style::new().fg(TEXT_DIM)),
+            Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" create · ", Style::new().fg(TEXT_DIM)),
+            Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .style(Style::new().fg(TEXT_WHITE));
+
+    frame.render_widget(paragraph, area);
+
+    // Position cursor in input field
+    if let Some(branch_state) = &app.branch_input {
+        frame.set_cursor_position(Position::new(
+            area.x + 8 + branch_state.cursor_position as u16,  // 8 = "Branch: " length
+            area.y + 2,  // Line 2 (after header and blank line)
+        ));
+    }
+}
+
 fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
     use crate::app::AgentPickerState;
     use crate::session::AgentType;
@@ -940,4 +1012,105 @@ fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn render_help_popup(frame: &mut Frame, area: Rect) {
+    // Calculate centered popup area
+    let popup_width = 50u16;
+    let popup_height = 23u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = vec![];
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled("Keyboard Shortcuts", Style::new().fg(TEXT_WHITE).bold()),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Normal mode
+    lines.push(Line::styled("Normal Mode", Style::new().fg(LOGO_LIGHT_BLUE).bold()));
+    lines.push(Line::from(vec![
+        Span::styled("  i       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Enter insert mode", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  n       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("New session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  w       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("New worktree session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  x       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Kill session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  j/k     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Navigate sessions", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  1-9     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Select session by number", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  C-u/C-d ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Scroll half page", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  g/G     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Scroll to top/bottom", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Tab     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Cycle permission mode", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  m       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Cycle model", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  q       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Quit", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Insert mode
+    lines.push(Line::styled("Insert Mode", Style::new().fg(LOGO_MINT).bold()));
+    lines.push(Line::from(vec![
+        Span::styled("  Enter   ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Send message", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Esc     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Cancel / Normal mode", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  C-v     ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Paste (text or image)", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Footer
+    lines.push(Line::from(vec![
+        Span::styled("Press ", Style::new().fg(TEXT_DIM)),
+        Span::styled("?", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" or ", Style::new().fg(TEXT_DIM)),
+        Span::styled("Esc", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" to close", Style::new().fg(TEXT_DIM)),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(LOGO_LIGHT_BLUE))
+        .style(Style::new().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
 }

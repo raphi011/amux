@@ -222,18 +222,28 @@ impl Session {
         })
     }
 
-    /// Scroll up by n lines
-    pub fn scroll_up(&mut self, n: usize) {
+    /// Scroll up by n lines. If at bottom (usize::MAX), first normalize to actual position.
+    pub fn scroll_up(&mut self, n: usize, total_lines: usize, viewport_height: usize) {
+        // Normalize usize::MAX to actual bottom position
+        if self.scroll_offset == usize::MAX {
+            self.scroll_offset = total_lines.saturating_sub(viewport_height);
+        }
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
     }
 
     /// Scroll down by n lines
-    pub fn scroll_down(&mut self, n: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(n);
+    pub fn scroll_down(&mut self, n: usize, total_lines: usize, viewport_height: usize) {
+        // Normalize usize::MAX to actual bottom position
+        if self.scroll_offset == usize::MAX {
+            self.scroll_offset = total_lines.saturating_sub(viewport_height);
+        }
+        // Cap at the maximum scrollable position
+        let max_scroll = total_lines.saturating_sub(viewport_height);
+        self.scroll_offset = self.scroll_offset.saturating_add(n).min(max_scroll);
     }
 
     /// Scroll to bottom of output (uses sentinel value, renderer handles actual positioning)
-    pub fn scroll_to_bottom(&mut self, _viewport_height: usize) {
+    pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
     }
 

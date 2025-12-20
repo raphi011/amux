@@ -102,23 +102,38 @@ pub fn load_image_from_path(path: &Path) -> Option<(String, String, String)> {
 pub fn try_parse_image_path(text: &str) -> Option<std::path::PathBuf> {
     let trimmed = text.trim();
 
-    // Skip if it looks like multiple lines or commands
-    if trimmed.contains('\n') || trimmed.contains(' ') {
+    // Skip if it looks like multiple lines
+    if trimmed.contains('\n') {
         return None;
     }
 
-    let path = Path::new(trimmed);
+    // Try different path formats:
+    // 1. Direct path (may contain spaces)
+    // 2. Path with escaped spaces (backslash before space)
+    // 3. Quoted path
+    let candidates = [
+        trimmed.to_string(),
+        // Remove surrounding quotes if present
+        trimmed.trim_matches('"').trim_matches('\'').to_string(),
+        // Unescape backslash-escaped spaces
+        trimmed.replace("\\ ", " "),
+    ];
 
-    // Check if extension is an image type
-    let extension = path.extension()?.to_str()?;
-    let is_image = matches!(
-        extension.to_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp"
-    );
+    for candidate in &candidates {
+        let path = Path::new(candidate);
 
-    if is_image && path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
+        // Check if extension is an image type
+        if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+            let is_image = matches!(
+                extension.to_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp"
+            );
+
+            if is_image && path.exists() {
+                return Some(path.to_path_buf());
+            }
+        }
     }
+
+    None
 }

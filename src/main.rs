@@ -1,6 +1,7 @@
 mod acp;
 mod app;
 mod clipboard;
+mod git;
 mod log;
 mod session;
 mod tui;
@@ -19,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock};
-use app::{App, FolderEntry, InputMode, ImageAttachment};
+use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig};
 use clipboard::ClipboardContent;
 use session::{AgentType, OutputType, SessionState, PendingPermission, PermissionMode};
 
@@ -120,19 +121,47 @@ async fn main() -> Result<()> {
         log::log(&format!("Log file: {}", log_path.display()));
     }
 
-    // Parse CLI arguments - optional starting directory
+    // Parse CLI arguments
     let args: Vec<String> = std::env::args().collect();
-    let start_dir = if args.len() > 1 {
-        let path = std::path::PathBuf::from(&args[1]);
-        if path.is_dir() {
-            path.canonicalize().unwrap_or(path)
-        } else {
-            eprintln!("Warning: '{}' is not a valid directory, using current directory", args[1]);
-            std::env::current_dir().unwrap_or_default()
+    let mut start_dir = std::env::current_dir().unwrap_or_default();
+    let mut worktree_dir_override: Option<std::path::PathBuf> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--worktree-dir" | "-w" => {
+                if i + 1 < args.len() {
+                    let path = std::path::PathBuf::from(&args[i + 1]);
+                    if path.is_dir() {
+                        worktree_dir_override = Some(path.canonicalize().unwrap_or(path));
+                    } else {
+                        // Directory doesn't exist yet, that's ok - it will be created
+                        worktree_dir_override = Some(path);
+                    }
+                    i += 2;
+                    continue;
+                } else {
+                    eprintln!("Warning: --worktree-dir requires a path argument");
+                    i += 1;
+                }
+            }
+            arg if !arg.starts_with('-') => {
+                let path = std::path::PathBuf::from(arg);
+                if path.is_dir() {
+                    start_dir = path.canonicalize().unwrap_or(path);
+                } else {
+                    eprintln!("Warning: '{}' is not a valid directory, using current directory", arg);
+                }
+            }
+            _ => {
+                // Unknown flag, ignore
+            }
         }
-    } else {
-        std::env::current_dir().unwrap_or_default()
-    };
+        i += 1;
+    }
+
+    // Load worktree config with precedence: CLI > env var > default
+    let worktree_config = WorktreeConfig::load(worktree_dir_override);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -142,7 +171,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new(start_dir);
+    let mut app = App::new(start_dir, worktree_config);
 
     // Run the app
     let result = run_app(&mut terminal, &mut app).await;
@@ -180,9 +209,25 @@ where
                     // Handle paste events (from drag & drop or Cmd+V in some terminals)
                     if let Event::Paste(text) = &event {
                         if app.input_mode == InputMode::Insert {
-                            // Insert pasted text into input buffer
-                            for c in text.chars() {
-                                app.input_char(c);
+                            // Check if it's a path to an image file
+                            if let Some(path) = clipboard::try_parse_image_path(text) {
+                                if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
+                                    app.add_attachment(ImageAttachment {
+                                        filename,
+                                        mime_type,
+                                        data,
+                                    });
+                                } else {
+                                    // Not a valid image, paste as text
+                                    for c in text.chars() {
+                                        app.input_char(c);
+                                    }
+                                }
+                            } else {
+                                // Regular text, paste it
+                                for c in text.chars() {
+                                    app.input_char(c);
+                                }
                             }
                         }
                         continue;
@@ -260,6 +305,9 @@ where
                                     // Normal mode keys
                                     match key.code {
                                         KeyCode::Char('q') => return Ok(()),
+                                        KeyCode::Char('?') => {
+                                            app.open_help();
+                                        }
                                         KeyCode::Esc => {
                                             // Cancel current prompt if session is working
                                             let session_idx = app.sessions.selected_index();
@@ -314,6 +362,13 @@ where
                                             // Open folder picker starting from configured directory
                                             let start = app.start_dir.clone();
                                             app.open_folder_picker(start.clone());
+                                            let entries = scan_folder_entries(&start).await;
+                                            app.set_folder_entries(entries);
+                                        }
+                                        KeyCode::Char('w') => {
+                                            // Open worktree folder picker
+                                            let start = app.start_dir.clone();
+                                            app.open_worktree_folder_picker(start.clone());
                                             let entries = scan_folder_entries(&start).await;
                                             app.set_folder_entries(entries);
                                         }
@@ -412,6 +467,157 @@ where
                                     _ => {}
                                 }
                             }
+                            InputMode::WorktreeFolderPicker => {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('q') => {
+                                        app.close_folder_picker();
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if let Some(picker) = &mut app.folder_picker {
+                                            picker.select_next();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if let Some(picker) = &mut app.folder_picker {
+                                            picker.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Char('l') | KeyCode::Right => {
+                                        // Enter directory
+                                        if app.folder_picker_enter_dir() {
+                                            if let Some(picker) = &app.folder_picker {
+                                                let entries = scan_folder_entries(&picker.current_dir).await;
+                                                app.set_folder_entries(entries);
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                                        // Go up
+                                        if app.folder_picker_go_up() {
+                                            if let Some(picker) = &app.folder_picker {
+                                                let entries = scan_folder_entries(&picker.current_dir).await;
+                                                app.set_folder_entries(entries);
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        // Select git repo and proceed to branch input
+                                        if let Some(picker) = &app.folder_picker {
+                                            if let Some(entry) = picker.selected_entry() {
+                                                if entry.is_parent {
+                                                    // Go up
+                                                    if app.folder_picker_go_up() {
+                                                        if let Some(picker) = &app.folder_picker {
+                                                            let entries = scan_folder_entries(&picker.current_dir).await;
+                                                            app.set_folder_entries(entries);
+                                                        }
+                                                    }
+                                                } else if entry.git_branch.is_some() {
+                                                    // This is a git repo - proceed to branch input
+                                                    let repo_path = entry.path.clone();
+                                                    app.close_folder_picker();
+
+                                                    // Fetch branches and open branch input
+                                                    match git::list_branches(&repo_path).await {
+                                                        Ok(branches) => {
+                                                            app.open_branch_input(repo_path, branches);
+                                                        }
+                                                        Err(e) => {
+                                                            log::log(&format!("Failed to list branches: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                                // Non-git directories are ignored - only git repos can be selected
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::BranchInput => {
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.close_branch_input();
+                                    }
+                                    KeyCode::Enter => {
+                                        // Create worktree and open agent picker
+                                        if let Some(branch_state) = &app.branch_input {
+                                            let branch_name = branch_state.branch_name().to_string();
+                                            if !branch_name.is_empty() {
+                                                let repo_path = branch_state.repo_path.clone();
+                                                let repo_name = git::repo_name(&repo_path);
+                                                let worktree_path = app.worktree_config.worktree_path(&repo_name, &branch_name);
+
+                                                // Check if branch exists locally or as remote
+                                                let local_exists = git::branch_exists(&repo_path, &branch_name).await.unwrap_or(false);
+                                                let remote_exists = git::remote_branch_exists(&repo_path, &branch_name).await.unwrap_or(false);
+                                                let create_branch = !local_exists && !remote_exists;
+
+                                                // Create worktree
+                                                match git::create_worktree(&repo_path, &worktree_path, &branch_name, create_branch).await {
+                                                    Ok(()) => {
+                                                        app.close_branch_input();
+                                                        // Open agent picker for the new worktree
+                                                        app.open_agent_picker(worktree_path);
+                                                    }
+                                                    Err(e) => {
+                                                        log::log(&format!("Failed to create worktree: {}", e));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Tab => {
+                                        // Accept autocomplete selection
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            branch_state.accept_selection();
+                                        }
+                                    }
+                                    KeyCode::Down => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            branch_state.select_next();
+                                        }
+                                    }
+                                    KeyCode::Up => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            branch_state.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            branch_state.input.insert(branch_state.cursor_position, c);
+                                            branch_state.cursor_position += 1;
+                                            branch_state.update_filter();
+                                            branch_state.show_autocomplete = true;
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            if branch_state.cursor_position > 0 {
+                                                branch_state.cursor_position -= 1;
+                                                branch_state.input.remove(branch_state.cursor_position);
+                                                branch_state.update_filter();
+                                                branch_state.show_autocomplete = true;
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Left => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            if branch_state.cursor_position > 0 {
+                                                branch_state.cursor_position -= 1;
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if let Some(branch_state) = &mut app.branch_input {
+                                            if branch_state.cursor_position < branch_state.input.len() {
+                                                branch_state.cursor_position += 1;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             InputMode::AgentPicker => {
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('q') => {
@@ -466,6 +672,14 @@ where
                                                 spawn_agent_with_resume(app, &agent_tx, &mut agent_commands, AgentType::ClaudeCode, resume_info).await?;
                                             }
                                         }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::Help => {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                                        app.close_help();
                                     }
                                     _ => {}
                                 }
@@ -971,25 +1185,34 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             session.append_text(text);
                         }
                     }
+                    SessionUpdate::AgentThoughtChunk => {
+                        // Silently ignore
+                    }
                     SessionUpdate::ToolCall { tool_call_id, title, .. } => {
                         let title_str = title
                             .filter(|t| t != "undefined" && !t.is_empty())
                             .unwrap_or_else(|| "Tool".to_string());
 
-                        // Parse title like "Bash(git push)" into name and description
+                        // Helper to strip all backticks from a string
+                        fn strip_backticks(s: &str) -> String {
+                            s.replace('`', "")
+                        }
+
+                        // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" into name and description
                         let (name, description) = if let Some(paren_pos) = title_str.find('(') {
-                            let name = title_str[..paren_pos].to_string();
+                            let name = strip_backticks(&title_str[..paren_pos]);
                             let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
                             // Strip backticks from description
-                            let desc = desc.trim_matches('`').to_string();
+                            let desc = strip_backticks(&desc);
                             (name, if desc.is_empty() { None } else { Some(desc) })
                         } else if title_str.starts_with('`') && title_str.ends_with('`') {
                             // Command in backticks like `cd /path && cargo build`
-                            let cmd = title_str.trim_matches('`').to_string();
+                            let cmd = strip_backticks(&title_str);
                             ("Bash".to_string(), Some(cmd))
                         } else {
-                            // Map common tool names
-                            let mapped_name = match title_str.as_str() {
+                            // Map common tool names and strip any stray backticks
+                            let clean_title = strip_backticks(&title_str);
+                            let mapped_name = match clean_title.as_str() {
                                 "Terminal" => "Bash",
                                 "Read File" => "Read",
                                 "Write File" => "Write",
@@ -1045,7 +1268,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     if let Some(option) = options.iter().find(|o| o.kind == crate::acp::PermissionKind::AllowOnce) {
                         session.state = SessionState::Prompting;
                         // Auto-scroll to bottom
-                        session.scroll_to_bottom(viewport_height);
+                        session.scroll_to_bottom();
                         return EventResult::AutoAcceptPermission {
                             request_id,
                             option_id: PermissionOptionId::from(option.option_id.clone()),
@@ -1080,7 +1303,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
             }
         }
         // Auto-scroll to bottom on new output
-        session.scroll_to_bottom(viewport_height);
+        session.scroll_to_bottom();
     }
     EventResult::None
 }

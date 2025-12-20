@@ -254,6 +254,7 @@ pub enum PlanStatus {
 #[derive(Debug, Clone)]
 pub enum SessionUpdate {
     AgentMessageChunk { content: UpdateContent },
+    AgentThoughtChunk,
     ToolCall {
         tool_call_id: String,
         title: Option<String>,
@@ -285,6 +286,9 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                     value.get("content").cloned().unwrap_or(Value::Null)
                 ).unwrap_or(UpdateContent::Other);
                 Ok(SessionUpdate::AgentMessageChunk { content })
+            }
+            Some("agent_thought_chunk") => {
+                Ok(SessionUpdate::AgentThoughtChunk)
             }
             Some("tool_call") => {
                 Ok(SessionUpdate::ToolCall {

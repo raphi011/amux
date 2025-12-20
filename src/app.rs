@@ -6,11 +6,14 @@ use crate::session::{Session, SessionManager, AgentType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
-    Normal,        // Navigation mode
-    Insert,        // Typing mode
-    FolderPicker,  // Selecting folder for new session
-    AgentPicker,   // Selecting agent type for new session
-    SessionPicker, // Selecting session to resume
+    Normal,              // Navigation mode
+    Insert,              // Typing mode
+    FolderPicker,        // Selecting folder for new session
+    AgentPicker,         // Selecting agent type for new session
+    SessionPicker,       // Selecting session to resume
+    Help,                // Help popup showing all hotkeys
+    WorktreeFolderPicker, // Selecting git repo for worktree
+    BranchInput,         // Entering branch name with autocomplete
 }
 
 /// Entry in the folder picker
@@ -128,6 +131,105 @@ impl AgentPickerState {
     }
 }
 
+/// A git branch entry for autocomplete
+#[derive(Debug, Clone)]
+pub struct BranchEntry {
+    pub name: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+}
+
+/// State for branch input with autocomplete
+#[derive(Debug, Clone)]
+pub struct BranchInputState {
+    pub repo_path: PathBuf,
+    pub input: String,
+    pub cursor_position: usize,
+    pub branches: Vec<BranchEntry>,
+    pub filtered: Vec<BranchEntry>,
+    pub selected: usize,
+    pub show_autocomplete: bool,
+}
+
+impl BranchInputState {
+    pub fn new(repo_path: PathBuf, branches: Vec<BranchEntry>) -> Self {
+        Self {
+            repo_path,
+            input: String::new(),
+            cursor_position: 0,
+            filtered: branches.clone(),
+            branches,
+            selected: 0,
+            show_autocomplete: true,
+        }
+    }
+
+    /// Filter branches based on current input
+    pub fn update_filter(&mut self) {
+        let query = self.input.to_lowercase();
+        self.filtered = self.branches
+            .iter()
+            .filter(|b| b.name.to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = (self.selected + 1) % self.filtered.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = self.selected.checked_sub(1).unwrap_or(self.filtered.len() - 1);
+        }
+    }
+
+    /// Accept the currently selected branch
+    pub fn accept_selection(&mut self) {
+        if let Some(branch) = self.filtered.get(self.selected) {
+            self.input = branch.name.clone();
+            self.cursor_position = self.input.len();
+        }
+        self.show_autocomplete = false;
+    }
+
+    /// Get the branch name to use
+    pub fn branch_name(&self) -> &str {
+        &self.input
+    }
+}
+
+/// Configuration for git worktrees
+#[derive(Debug, Clone)]
+pub struct WorktreeConfig {
+    pub worktree_dir: PathBuf,
+}
+
+impl WorktreeConfig {
+    /// Load worktree config with precedence: cli_override > env var > default
+    pub fn load(cli_override: Option<PathBuf>) -> Self {
+        let worktree_dir = cli_override
+            .or_else(|| std::env::var("AMUX_WORKTREE_DIR").ok().map(PathBuf::from))
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".amux/worktrees")
+            });
+
+        Self { worktree_dir }
+    }
+
+    /// Generate worktree path for a repo and branch
+    pub fn worktree_path(&self, repo_name: &str, branch_name: &str) -> PathBuf {
+        // Sanitize branch name for filesystem (replace / with -)
+        let safe_branch = branch_name.replace('/', "-");
+        self.worktree_dir.join(format!("{}-{}", repo_name, safe_branch))
+    }
+}
+
 /// Spinner frames for loading animation
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -148,14 +250,16 @@ pub struct App {
     pub folder_picker: Option<FolderPickerState>,
     pub agent_picker: Option<AgentPickerState>,
     pub session_picker: Option<SessionPickerState>,
+    pub branch_input: Option<BranchInputState>,
     pub spinner_frame: usize,
     pub attachments: Vec<ImageAttachment>,
     pub selected_attachment: Option<usize>,
     pub start_dir: PathBuf,
+    pub worktree_config: WorktreeConfig,
 }
 
 impl App {
-    pub fn new(start_dir: PathBuf) -> Self {
+    pub fn new(start_dir: PathBuf, worktree_config: WorktreeConfig) -> Self {
         Self {
             sessions: SessionManager::new(),
             input_mode: InputMode::Normal,
@@ -165,10 +269,12 @@ impl App {
             folder_picker: None,
             agent_picker: None,
             session_picker: None,
+            branch_input: None,
             spinner_frame: 0,
             attachments: Vec::new(),
             selected_attachment: None,
             start_dir,
+            worktree_config,
         }
     }
 
@@ -334,6 +440,34 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Open folder picker for worktree repo selection
+    pub fn open_worktree_folder_picker(&mut self, start_dir: PathBuf) {
+        self.folder_picker = Some(FolderPickerState::new(start_dir));
+        self.input_mode = InputMode::WorktreeFolderPicker;
+    }
+
+    /// Open branch input with autocomplete
+    pub fn open_branch_input(&mut self, repo_path: PathBuf, branches: Vec<BranchEntry>) {
+        self.branch_input = Some(BranchInputState::new(repo_path, branches));
+        self.input_mode = InputMode::BranchInput;
+    }
+
+    /// Close branch input
+    pub fn close_branch_input(&mut self) {
+        self.branch_input = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the help popup
+    pub fn open_help(&mut self) {
+        self.input_mode = InputMode::Help;
+    }
+
+    /// Close the help popup
+    pub fn close_help(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
     /// Update viewport height (called from render)
     pub fn set_viewport_height(&mut self, height: usize) {
         self.viewport_height = height;
@@ -341,15 +475,21 @@ impl App {
 
     /// Scroll current session up
     pub fn scroll_up(&mut self, n: usize) {
+        let viewport = self.viewport_height;
         if let Some(session) = self.sessions.selected_session_mut() {
-            session.scroll_up(n);
+            // Use output length as approximation for total lines
+            // (actual rendered lines may be more due to wrapping, but this is good enough)
+            let total_lines = session.output.len().max(viewport);
+            session.scroll_up(n, total_lines, viewport);
         }
     }
 
     /// Scroll current session down
     pub fn scroll_down(&mut self, n: usize) {
+        let viewport = self.viewport_height;
         if let Some(session) = self.sessions.selected_session_mut() {
-            session.scroll_down(n);
+            let total_lines = session.output.len().max(viewport);
+            session.scroll_down(n, total_lines, viewport);
         }
     }
 
@@ -363,7 +503,7 @@ impl App {
     /// Scroll to bottom of output
     pub fn scroll_to_bottom(&mut self) {
         if let Some(session) = self.sessions.selected_session_mut() {
-            session.scroll_to_bottom(self.viewport_height);
+            session.scroll_to_bottom();
         }
     }
 
