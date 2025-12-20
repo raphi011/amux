@@ -11,12 +11,12 @@ use crate::session::{SessionState, PermissionMode};
 use crate::acp::{PermissionKind, PlanStatus};
 use super::theme::*;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     // Horizontal split: sidebar | left padding | separator | right padding | main content
     let content_layout = Layout::horizontal([
-        Constraint::Length(38), // Sidebar
+        Constraint::Length(40), // Sidebar (38 + 2 for left/right padding)
         Constraint::Length(2),  // Left padding (2 spaces)
         Constraint::Length(1),  // Separator
         Constraint::Length(3),  // Right padding (3 spaces)
@@ -24,12 +24,21 @@ pub fn render(frame: &mut Frame, app: &App) {
     ])
     .split(area);
 
+    // Sidebar with 1-char padding on left/right, no top padding
+    let sidebar_outer = content_layout[0];
+    let sidebar_inner = Rect {
+        x: sidebar_outer.x + 1,
+        y: sidebar_outer.y,
+        width: sidebar_outer.width.saturating_sub(2),
+        height: sidebar_outer.height.saturating_sub(1),
+    };
+
     // Sidebar: logo + session list (includes hotkeys and plan at bottom)
     let sidebar_layout = Layout::vertical([
-        Constraint::Length(2),  // Logo
+        Constraint::Length(1),  // Logo (single line)
         Constraint::Min(0),     // Session list + hotkeys + plan
     ])
-    .split(content_layout[0]);
+    .split(sidebar_inner);
 
     // Render logo at top of sidebar
     render_logo(frame, sidebar_layout[0]);
@@ -166,10 +175,12 @@ fn render_logo(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
+fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    use crate::app::ClickRegion;
     use crate::session::AgentType;
 
     let mut session_lines: Vec<Line> = vec![];
+    let mut session_click_areas: Vec<(usize, ClickRegion)> = vec![];
 
     for (i, session) in app.sessions.sessions().iter().enumerate() {
         let is_selected = i == app.sessions.selected_index();
@@ -242,10 +253,17 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
 
         let second_line = Line::from(second_spans);
 
+        // Track click region for this session (3 lines per session)
+        let line_y = area.y + session_lines.len() as u16;
+        session_click_areas.push((i, ClickRegion::new(area.x, line_y, area.width, 3)));
+
         session_lines.push(first_line);
         session_lines.push(second_line);
         session_lines.push(Line::raw("")); // Spacing
     }
+
+    // Update click areas for sessions
+    app.click_areas.session_items = session_click_areas;
 
     if session_lines.is_empty() {
         session_lines.push(Line::styled("No sessions", Style::new().fg(TEXT_DIM)));
@@ -367,23 +385,39 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
                                 ])
                             }).collect()
                         }
-                        OutputType::ToolCall { tool_call_id, name, description } => {
-                            // Tool call - spinner if active, green dot if complete
+                        OutputType::ToolCall { tool_call_id, name, description, failed } => {
+                            // Tool call - spinner if active, red dot if failed, green dot if complete
                             let is_active = active_tool_id == Some(tool_call_id.as_str());
-                            let indicator = if is_active {
-                                format!("{} ", spinner)
+                            let (indicator, indicator_color) = if is_active {
+                                (format!("{} ", spinner), TOOL_DOT)
+                            } else if *failed {
+                                ("● ".to_string(), LOGO_CORAL)
                             } else {
-                                "● ".to_string()
+                                ("● ".to_string(), TOOL_DOT)
                             };
-                            let display = if let Some(desc) = description {
-                                format!("{}({})", name, desc)
-                            } else {
-                                name.clone()
+                            // Filter out any "undefined" that might have slipped through
+                            let clean_desc = description.as_ref().filter(|d| {
+                                let trimmed = d.trim();
+                                !trimmed.is_empty() && trimmed != "undefined" && trimmed != "null"
+                            });
+                            // Always use Name(...) format, even if description is empty
+                            let display = match clean_desc {
+                                Some(desc) => format!("{}({})", name, desc),
+                                None => format!("{}()", name),
                             };
-                            vec![Line::from(vec![
-                                Span::styled(indicator, Style::new().fg(TOOL_DOT)),
-                                Span::styled(display, Style::new().fg(TEXT_WHITE).bold()),
-                            ])]
+                            // Wrap tool call display for narrow windows (indicator is 2 chars)
+                            let wrapped = wrap_text(&display, inner_width.saturating_sub(2));
+                            wrapped.into_iter().enumerate().map(|(i, text)| {
+                                let prefix = if i == 0 {
+                                    Span::styled(indicator.clone(), Style::new().fg(indicator_color))
+                                } else {
+                                    Span::styled("  ", Style::new().fg(indicator_color))
+                                };
+                                Line::from(vec![
+                                    prefix,
+                                    Span::styled(text, Style::new().fg(TEXT_WHITE).bold()),
+                                ])
+                            }).collect()
                         }
                         OutputType::ToolOutput => {
                             // Tool output - └ connector, plain text (no markdown)
@@ -401,39 +435,45 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
                             }).collect()
                         }
                         OutputType::DiffAdd => {
-                            // Added line - green background
-                            let content = &output_line.content;
+                            // Added line - green background, no padding
                             vec![Line::from(vec![
                                 Span::styled("  ", Style::new()),
                                 Span::styled(
-                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    &output_line.content,
                                     Style::new().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG),
                                 ),
                             ])]
                         }
                         OutputType::DiffRemove => {
-                            // Removed line - red background
-                            let content = &output_line.content;
+                            // Removed line - red background, no padding
                             vec![Line::from(vec![
                                 Span::styled("  ", Style::new()),
                                 Span::styled(
-                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    &output_line.content,
                                     Style::new().fg(DIFF_REMOVE_FG).bg(DIFF_REMOVE_BG),
                                 ),
                             ])]
                         }
                         OutputType::DiffContext => {
                             // Context line - dim
+                            let content = &output_line.content;
                             vec![Line::from(vec![
                                 Span::styled("  ", Style::new()),
-                                Span::styled(&output_line.content, Style::new().fg(TEXT_DIM)),
+                                Span::styled(
+                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    Style::new().fg(TEXT_DIM),
+                                ),
                             ])]
                         }
                         OutputType::DiffHeader => {
-                            // Diff header - dim, with └ on first line
+                            // Diff header - dim, indented to align with diff content
+                            let content = &output_line.content;
                             vec![Line::from(vec![
-                                Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR)),
-                                Span::styled(&output_line.content, Style::new().fg(TEXT_DIM)),
+                                Span::styled("  ", Style::new()),
+                                Span::styled(
+                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    Style::new().fg(TEXT_DIM),
+                                ),
                             ])]
                         }
                         OutputType::Error => {
@@ -547,7 +587,9 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     result
 }
 
-fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
+fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
+    use crate::app::ClickRegion;
+
     let is_insert = app.input_mode == InputMode::Insert;
     let width = area.width as usize;
 
@@ -619,6 +661,9 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
     let content_width = width.saturating_sub(2); // Account for prompt "> "
     let wrapped = wrap_text(&app.input_buffer, content_width);
 
+    // Calculate how many lines the input takes (for click region calculation)
+    let input_line_count = wrapped.len();
+
     // Build lines with prompt on first line
     for (i, line_text) in wrapped.iter().enumerate() {
         if i == 0 {
@@ -636,7 +681,30 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Track where the mode line starts for click regions
+    let mode_line_y = area.y + attachment_line_count as u16 + input_line_count as u16;
+
+    // Calculate permission mode text and model info for click region sizing
+    // We need to extract these values before building the mode_line to avoid borrow conflicts
+    let (permission_mode_width, model_start_x, model_name_len) = if let Some(session) = app.selected_session() {
+        let mode = session.permission_mode;
+        let mode_str = match mode {
+            PermissionMode::Normal => "normal",
+            PermissionMode::Plan => "plan",
+            PermissionMode::AcceptAll => "accept all",
+        };
+        // "[tab] " is 6 chars, then the mode text
+        let perm_width = 6 + mode_str.len();
+        // Model starts after permission mode + 2 spaces
+        let model_x = area.x + perm_width as u16 + 2;
+        let model_len = session.current_model_name().map(|n| n.len());
+        (perm_width, model_x, model_len)
+    } else {
+        (0, area.x, None)
+    };
+
     // Add permission mode indicator line
+    // We need to clone/own the strings to avoid borrowing app during the Line construction
     let mode_line = if let Some(session) = app.selected_session() {
         let mode = session.permission_mode;
         let (mode_text, mode_color) = match mode {
@@ -649,10 +717,10 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(mode_text, Style::new().fg(mode_color)),
         ];
 
-        // Add model info if available
+        // Add model info if available - clone the string to own it
         if let Some(model_name) = session.current_model_name() {
             spans.push(Span::styled("  [m] ", Style::new().fg(TEXT_DIM)));
-            spans.push(Span::styled(model_name, Style::new().fg(LOGO_LIGHT_BLUE)));
+            spans.push(Span::styled(model_name.to_string(), Style::new().fg(LOGO_LIGHT_BLUE)));
         }
 
         Line::from(spans)
@@ -664,14 +732,70 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
+    // Update click areas (after rendering, so no borrow conflicts)
+    // Input field: covers attachment lines + input lines (not the mode line)
+    app.click_areas.input_field = ClickRegion::new(
+        area.x,
+        area.y,
+        area.width,
+        (attachment_line_count + input_line_count) as u16,
+    );
+
+    // Permission mode toggle: "[tab] <mode>"
+    app.click_areas.permission_mode = ClickRegion::new(
+        area.x,
+        mode_line_y,
+        permission_mode_width as u16,
+        1,
+    );
+
+    // Model selector: "[m] <model_name>" - only if there's a model
+    if let Some(model_len) = model_name_len {
+        // "[m] " is 4 chars + model name length
+        let model_width = 4 + model_len;
+        app.click_areas.model_selector = ClickRegion::new(
+            model_start_x,
+            mode_line_y,
+            model_width as u16,
+            1,
+        );
+    } else {
+        app.click_areas.model_selector = ClickRegion::default();
+    }
+
     // Set cursor position when in insert mode and not selecting attachments
     if is_insert && app.selected_attachment.is_none() {
-        // Calculate cursor position with wrapping
-        let cursor_line = if content_width > 0 { app.cursor_position / content_width } else { 0 };
-        let cursor_col = if content_width > 0 { app.cursor_position % content_width } else { 0 };
+        // Convert byte position to character position for display
+        let char_position = app.input_buffer[..app.cursor_position].chars().count();
 
-        // Add prompt offset for first line
-        let x_offset = 2; // prompt width
+        // Calculate cursor position by iterating through wrapped lines
+        // (simple division doesn't work because word wrap produces variable-length lines)
+        let mut cursor_line = 0;
+        let mut cursor_col = char_position;
+        let mut chars_so_far = 0;
+
+        for (i, line_text) in wrapped.iter().enumerate() {
+            let line_chars = line_text.chars().count();
+            if chars_so_far + line_chars >= char_position {
+                cursor_line = i;
+                cursor_col = char_position - chars_so_far;
+                break;
+            }
+            chars_so_far += line_chars;
+            // Account for the space/newline that was consumed between lines
+            if i < wrapped.len() - 1 {
+                chars_so_far += 1; // space between words that caused the wrap
+            }
+        }
+
+        // If cursor is past all content (at the very end), put it at end of last line
+        if char_position > chars_so_far {
+            cursor_line = wrapped.len().saturating_sub(1);
+            cursor_col = wrapped.last().map(|l| l.chars().count()).unwrap_or(0);
+        }
+
+        // Add prompt offset (both "> " and "  " are 2 chars)
+        let x_offset = 2;
 
         frame.set_cursor_position(Position::new(
             area.x + x_offset as u16 + cursor_col as u16,
@@ -743,33 +867,95 @@ fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::raw("")); // spacing
 
+        // Count cleanable worktrees
+        let cleanable_count = picker.entries.iter()
+            .filter(|e| !e.is_create_new && e.is_clean && e.is_merged)
+            .count();
+
         // List entries
         for (i, entry) in picker.entries.iter().enumerate() {
             let is_selected = i == picker.selected;
             let cursor = if is_selected { "> " } else { "  " };
 
-            let (icon, name_style) = if entry.is_create_new {
-                ("", Style::new().fg(LOGO_MINT))
+            if entry.is_create_new {
+                let name_style = if is_selected {
+                    Style::new().fg(LOGO_MINT).bold()
+                } else {
+                    Style::new().fg(LOGO_MINT)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(cursor),
+                    Span::styled(&entry.name, name_style),
+                ]));
             } else {
-                ("󰙅 ", Style::new().fg(TEXT_WHITE))
-            };
+                let name_style = if is_selected {
+                    Style::new().fg(TEXT_WHITE).bold()
+                } else {
+                    Style::new().fg(TEXT_WHITE)
+                };
 
-            let name_style = if is_selected {
-                name_style.bold()
-            } else {
-                name_style
-            };
+                // Status indicators
+                let is_cleanable = entry.is_clean && entry.is_merged;
+                let status_icon = if is_cleanable {
+                    "󰄬 "  // Checkmark - can be cleaned
+                } else if !entry.is_clean {
+                    "󰅖 "  // X - has uncommitted changes
+                } else {
+                    "󰜛 "  // Unmerged - clean but not merged
+                };
+                let status_color = if is_cleanable {
+                    LOGO_MINT
+                } else if !entry.is_clean {
+                    LOGO_CORAL
+                } else {
+                    LOGO_GOLD
+                };
 
-            lines.push(Line::from(vec![
-                Span::raw(cursor),
-                Span::styled(icon, Style::new().fg(if entry.is_create_new { LOGO_MINT } else { LOGO_GOLD })),
-                Span::styled(&entry.name, name_style),
-            ]));
+                lines.push(Line::from(vec![
+                    Span::raw(cursor),
+                    Span::styled("󰙅 ", Style::new().fg(LOGO_GOLD)),
+                    Span::styled(&entry.name, name_style),
+                    Span::raw(" "),
+                    Span::styled(status_icon, Style::new().fg(status_color)),
+                ]));
+            }
         }
 
         if picker.entries.len() == 1 {
             lines.push(Line::styled("  (no existing worktrees)", Style::new().fg(TEXT_DIM)));
         }
+
+        // Help text
+        lines.push(Line::raw(""));
+        let mut help_spans = vec![
+            Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" select · ", Style::new().fg(TEXT_DIM)),
+            Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+        ];
+
+        // Show cleanup shortcut only if there are cleanable worktrees
+        if cleanable_count > 0 {
+            help_spans.push(Span::styled(" · ", Style::new().fg(TEXT_DIM)));
+            help_spans.push(Span::styled("[c]", Style::new().fg(TEXT_WHITE)));
+            help_spans.push(Span::styled(
+                format!(" cleanup ({})", cleanable_count),
+                Style::new().fg(TEXT_DIM),
+            ));
+        }
+
+        lines.push(Line::from(help_spans));
+
+        // Legend
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("󰄬 ", Style::new().fg(LOGO_MINT)),
+            Span::styled("cleanable  ", Style::new().fg(TEXT_DIM)),
+            Span::styled("󰜛 ", Style::new().fg(LOGO_GOLD)),
+            Span::styled("unmerged  ", Style::new().fg(TEXT_DIM)),
+            Span::styled("󰅖 ", Style::new().fg(LOGO_CORAL)),
+            Span::styled("dirty", Style::new().fg(TEXT_DIM)),
+        ]));
     }
 
     let paragraph = Paragraph::new(lines)
@@ -1123,8 +1309,10 @@ fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
 
     if let Some(session) = app.selected_session() {
         if let Some(perm) = &session.pending_permission {
-            // Header
-            let title = perm.title.clone().unwrap_or_else(|| "Tool".to_string());
+            // Header - strip backticks from title
+            let title = perm.title.clone()
+                .unwrap_or_else(|| "Tool".to_string())
+                .replace('`', "");
             lines.push(Line::from(vec![
                 Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)),
                 Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
@@ -1299,12 +1487,12 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
         Span::styled("New worktree session", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  c       ", Style::new().fg(TEXT_WHITE)),
-        Span::styled("Cleanup worktrees", Style::new().fg(TEXT_DIM)),
-    ]));
-    lines.push(Line::from(vec![
         Span::styled("  x       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Kill session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  d       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Duplicate session", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  j/k     ", Style::new().fg(TEXT_WHITE)),

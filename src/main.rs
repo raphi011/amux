@@ -1,14 +1,18 @@
 mod acp;
 mod app;
 mod clipboard;
+mod error;
 mod git;
+mod handlers;
 mod log;
+mod picker;
+mod services;
 mod session;
 mod tui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyCode, KeyEventKind, KeyModifiers, EventStream, EnableBracketedPaste, DisableBracketedPaste},
+    event::{Event, KeyCode, KeyEventKind, KeyModifiers, EventStream, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -22,6 +26,7 @@ use tokio::sync::mpsc;
 use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock, AskUserResponse};
 use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry, CleanupEntry};
 use clipboard::ClipboardContent;
+use picker::Picker;
 use session::{AgentType, OutputType, SessionState, PendingPermission, PendingQuestion, PermissionMode};
 
 /// Get the current git branch for a directory
@@ -49,6 +54,56 @@ async fn get_git_branch_if_repo(dir: &std::path::Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Format agent capabilities into a human-readable string
+fn format_agent_capabilities(caps: &serde_json::Value) -> String {
+    let mut parts = vec![];
+
+    // MCP capabilities
+    if let Some(mcp) = caps.get("mcpCapabilities") {
+        let mut mcp_features = vec![];
+        if mcp.get("http").and_then(|v| v.as_bool()).unwrap_or(false) {
+            mcp_features.push("HTTP");
+        }
+        if mcp.get("sse").and_then(|v| v.as_bool()).unwrap_or(false) {
+            mcp_features.push("SSE");
+        }
+        if !mcp_features.is_empty() {
+            parts.push(format!("MCP: {}", mcp_features.join(", ")));
+        }
+    }
+
+    // Prompt capabilities
+    if let Some(prompt) = caps.get("promptCapabilities") {
+        let mut prompt_features = vec![];
+        if prompt.get("embeddedContext").and_then(|v| v.as_bool()).unwrap_or(false) {
+            prompt_features.push("embedded context");
+        }
+        if prompt.get("image").and_then(|v| v.as_bool()).unwrap_or(false) {
+            prompt_features.push("images");
+        }
+        if !prompt_features.is_empty() {
+            parts.push(format!("Supports: {}", prompt_features.join(", ")));
+        }
+    }
+
+    // Session capabilities
+    if let Some(session) = caps.get("sessionCapabilities") {
+        let mut session_features = vec![];
+        if session.get("resume").is_some() {
+            session_features.push("resume");
+        }
+        if !session_features.is_empty() {
+            parts.push(format!("Session: {}", session_features.join(", ")));
+        }
+    }
+
+    if parts.is_empty() {
+        "Agent capabilities: (none reported)".to_string()
+    } else {
+        format!("Agent capabilities: {}", parts.join(" | "))
+    }
 }
 
 /// Scan a directory for subdirectories
@@ -99,7 +154,7 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
 }
 
 /// Scan the worktree directory for existing worktrees
-async fn scan_worktrees(worktree_dir: &std::path::Path) -> Vec<WorktreeEntry> {
+async fn scan_worktrees(worktree_dir: &std::path::Path, fetch_first: bool) -> Vec<WorktreeEntry> {
     let mut entries = vec![];
 
     // Always add "Create new worktree" option first
@@ -107,38 +162,122 @@ async fn scan_worktrees(worktree_dir: &std::path::Path) -> Vec<WorktreeEntry> {
         name: "+ Create new worktree".to_string(),
         path: std::path::PathBuf::new(),
         is_create_new: true,
+        is_clean: false,
+        is_merged: false,
     });
 
     // Scan existing worktrees
     if let Ok(mut read_dir) = tokio::fs::read_dir(worktree_dir).await {
-        let mut worktrees = vec![];
+        let mut worktree_paths = vec![];
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             if let Ok(file_type) = entry.file_type().await {
                 if file_type.is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_string();
                     let path = entry.path();
                     // Only include if it looks like a git worktree (has .git file or directory)
                     let git_path = path.join(".git");
                     if git_path.exists() {
-                        worktrees.push((name, path));
+                        worktree_paths.push(path);
                     }
                 }
             }
         }
 
+        // Fetch from all unique parent repos first (for accurate merge status)
+        if fetch_first {
+            let mut fetched_repos = std::collections::HashSet::new();
+            for path in &worktree_paths {
+                if let Some(parent_repo) = get_worktree_parent_repo(path).await {
+                    if fetched_repos.insert(parent_repo.clone()) {
+                        log::log(&format!("Fetching from origin in {}", parent_repo.display()));
+                        if let Err(e) = git::fetch_origin(&parent_repo).await {
+                            log::log(&format!("Failed to fetch: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now get status for each worktree
+        let mut worktrees = vec![];
+        for path in worktree_paths {
+            let name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let is_clean = git::is_worktree_clean(&path).await.unwrap_or(false);
+            let is_merged = get_worktree_merged_status(&path).await;
+            worktrees.push((name, path, is_clean, is_merged));
+        }
+
         // Sort alphabetically
         worktrees.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
-        for (name, path) in worktrees {
+        for (name, path, is_clean, is_merged) in worktrees {
             entries.push(WorktreeEntry {
                 name,
                 path,
                 is_create_new: false,
+                is_clean,
+                is_merged,
             });
         }
     }
 
     entries
+}
+
+/// Get the parent repo path for a worktree
+async fn get_worktree_parent_repo(worktree_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let gitdir_output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(worktree_path)
+        .output()
+        .await;
+
+    match gitdir_output {
+        Ok(output) if output.status.success() => {
+            let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let common_dir = std::path::PathBuf::from(dir);
+            common_dir.parent().map(|p| p.to_path_buf())
+        }
+        _ => None,
+    }
+}
+
+/// Get the merged status for a worktree by finding its parent repo and branch
+async fn get_worktree_merged_status(worktree_path: &std::path::Path) -> bool {
+    // Get current branch
+    let branch_output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .await;
+
+    let branch = match branch_output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => return false,
+    };
+
+    // Get the common git dir (parent repo)
+    let gitdir_output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(worktree_path)
+        .output()
+        .await;
+
+    let common_dir = match gitdir_output {
+        Ok(output) if output.status.success() => {
+            let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            std::path::PathBuf::from(dir)
+        }
+        _ => return false,
+    };
+
+    // The parent repo is one level up from the .git directory
+    let parent_repo = common_dir.parent().unwrap_or(&common_dir);
+
+    git::is_branch_merged(parent_repo, &branch).await.unwrap_or(false)
 }
 
 /// Command to send to an agent
@@ -211,7 +350,7 @@ async fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -223,7 +362,7 @@ async fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -233,14 +372,20 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
 where
     B::Error: Send + Sync + 'static,
 {
-    // Channel for agent events
-    let (agent_tx, mut agent_rx) = mpsc::channel::<(usize, AgentEvent)>(100);
+    // Channel for agent events (keyed by session ID for stable routing)
+    let (agent_tx, mut agent_rx) = mpsc::channel::<(String, AgentEvent)>(100);
 
-    // Channels for sending commands to agents (one per session)
-    let mut agent_commands: HashMap<usize, mpsc::Sender<AgentCommand>> = HashMap::new();
+    // Channels for sending commands to agents (keyed by session ID)
+    let mut agent_commands: HashMap<String, mpsc::Sender<AgentCommand>> = HashMap::new();
 
     // Event stream for keyboard
     let mut event_stream = EventStream::new();
+
+    // Open folder picker on startup
+    let start = app.start_dir.clone();
+    app.open_folder_picker(start.clone());
+    let entries = scan_folder_entries(&start).await;
+    app.set_folder_entries(entries);
 
     loop {
         // Render
@@ -253,6 +398,11 @@ where
                 if let Some(Ok(event)) = maybe_event {
                     // Handle paste events (from drag & drop or Cmd+V in some terminals)
                     if let Event::Paste(text) = &event {
+                        // Auto-switch to insert mode if in normal mode with a session selected
+                        if app.input_mode == InputMode::Normal && app.sessions.selected_session().is_some() {
+                            app.enter_insert_mode();
+                        }
+
                         if app.input_mode == InputMode::Insert {
                             // Check if it's a path to an image file
                             if let Some(path) = clipboard::try_parse_image_path(text) {
@@ -278,6 +428,66 @@ where
                         continue;
                     }
 
+                    // Handle mouse events (scroll and click)
+                    if let Event::Mouse(mouse) = &event {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                app.scroll_up(3);
+                                continue;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                app.scroll_down(3);
+                                continue;
+                            }
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                let x = mouse.column;
+                                let y = mouse.row;
+
+                                // Check if click is on input field - enter insert mode
+                                if app.click_areas.input_field.contains(x, y) {
+                                    if app.sessions.selected_session().is_some() {
+                                        app.enter_insert_mode();
+                                    }
+                                    continue;
+                                }
+
+                                // Check if click is on permission mode toggle
+                                if app.click_areas.permission_mode.contains(x, y) {
+                                    let session_idx = app.sessions.selected_index();
+                                    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                        session.cycle_permission_mode();
+                                    }
+                                    continue;
+                                }
+
+                                // Check if click is on model selector
+                                if app.click_areas.model_selector.contains(x, y) {
+                                    if let Some(session) = app.sessions.selected_session_mut() {
+                                        if let Some(model_id) = session.cycle_model() {
+                                            let session_id = session.id.clone();
+                                            if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                let _ = cmd_tx.send(AgentCommand::SetModel {
+                                                    session_id,
+                                                    model_id,
+                                                }).await;
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                // Check if click is on a session in the list
+                                for (session_idx, region) in &app.click_areas.session_items {
+                                    if region.contains(x, y) {
+                                        app.sessions.select_index(*session_idx);
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
                     // Handle key events
                     if let Event::Key(key) = event {
                     if key.kind == KeyEventKind::Press {
@@ -298,14 +508,14 @@ where
                                     match key.code {
                                         KeyCode::Char('y') | KeyCode::Enter => {
                                             // Allow - select the first allow_once option
-                                            let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(perm) = &session.pending_permission {
                                                     let option_id = perm.selected_option()
                                                         .or_else(|| perm.allow_once_option())
                                                         .map(|o| PermissionOptionId::from(o.option_id.clone()));
                                                     let request_id = perm.request_id;
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::PermissionResponse {
                                                             request_id,
                                                             option_id,
@@ -323,11 +533,11 @@ where
                                         }
                                         KeyCode::Char('n') | KeyCode::Esc => {
                                             // Reject/Cancel
-                                            let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(perm) = &session.pending_permission {
                                                     let request_id = perm.request_id;
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::PermissionResponse {
                                                             request_id,
                                                             option_id: None, // Cancelled
@@ -363,15 +573,15 @@ where
                                     }
                                 } else if has_question {
                                     // Question mode keys - allows typing
-                                    let session_idx = app.sessions.selected_index();
                                     match key.code {
                                         KeyCode::Enter => {
                                             // Submit answer
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &session.pending_question {
                                                     let answer = question.get_answer();
                                                     let request_id = question.request_id;
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::AskUserResponse {
                                                             request_id,
                                                             answer,
@@ -389,10 +599,11 @@ where
                                         }
                                         KeyCode::Esc => {
                                             // Cancel - send empty response
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &session.pending_question {
                                                     let request_id = question.request_id;
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::AskUserResponse {
                                                             request_id,
                                                             answer: String::new(),
@@ -410,49 +621,49 @@ where
                                         }
                                         KeyCode::Char(c) => {
                                             // Type into input
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_char(c);
                                                 }
                                             }
                                         }
                                         KeyCode::Backspace => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_backspace();
                                                 }
                                             }
                                         }
                                         KeyCode::Delete => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_delete();
                                                 }
                                             }
                                         }
                                         KeyCode::Left => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_left();
                                                 }
                                             }
                                         }
                                         KeyCode::Right => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_right();
                                                 }
                                             }
                                         }
                                         KeyCode::Home => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_home();
                                                 }
                                             }
                                         }
                                         KeyCode::End => {
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     question.input_end();
                                                 }
@@ -460,7 +671,7 @@ where
                                         }
                                         KeyCode::Up => {
                                             // Navigate options if available
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     if !question.is_free_text() {
                                                         question.select_prev();
@@ -470,7 +681,7 @@ where
                                         }
                                         KeyCode::Down => {
                                             // Navigate options if available
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(question) = &mut session.pending_question {
                                                     if !question.is_free_text() {
                                                         question.select_next();
@@ -480,7 +691,7 @@ where
                                         }
                                         KeyCode::Tab => {
                                             // Cycle permission mode even when answering questions
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 session.cycle_permission_mode();
                                             }
                                         }
@@ -495,15 +706,12 @@ where
                                         }
                                         KeyCode::Esc => {
                                             // Cancel current prompt if session is working
-                                            let session_idx = app.sessions.selected_index();
-                                            let is_prompting = app.sessions.selected_session()
-                                                .map(|s| s.state == SessionState::Prompting)
-                                                .unwrap_or(false);
-                                            if is_prompting {
-                                                if let Some(cmd_tx) = agent_commands.get(&session_idx) {
-                                                    let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
-                                                }
-                                                if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
+                                                if session.state == SessionState::Prompting {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                        let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
+                                                    }
                                                     session.add_output("⚠ Cancelled".to_string(), OutputType::Text);
                                                     session.state = SessionState::Idle;
                                                 }
@@ -511,18 +719,16 @@ where
                                         }
                                         KeyCode::Tab => {
                                             // Cycle permission mode for selected session
-                                            let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 session.cycle_permission_mode();
                                             }
                                         }
                                         KeyCode::Char('m') => {
                                             // Cycle model for selected session
-                                            let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                            if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(model_id) = session.cycle_model() {
                                                     let session_id = session.id.clone();
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::SetModel {
                                                             session_id,
                                                             model_id,
@@ -552,24 +758,28 @@ where
                                         }
                                         KeyCode::Char('w') => {
                                             // Open worktree picker (existing worktrees or create new)
+                                            // Don't fetch here - only fetch when opening cleanup view
                                             let worktree_dir = app.worktree_config.worktree_dir.clone();
-                                            let entries = scan_worktrees(&worktree_dir).await;
+                                            let entries = scan_worktrees(&worktree_dir, false).await;
                                             app.open_worktree_picker(entries);
                                         }
                                         KeyCode::Char('x') => {
-                                            let idx = app.sessions.selected_index();
-                                            agent_commands.remove(&idx);
+                                            if let Some(session) = app.sessions.selected_session() {
+                                                let session_id = session.id.clone();
+                                                agent_commands.remove(&session_id);
+                                            }
                                             app.kill_selected_session();
                                         }
-                                        KeyCode::Char('c') => {
-                                            // Open worktree cleanup picker
-                                            let start = app.start_dir.clone();
-                                            app.open_folder_picker(start.clone());
-                                            let entries = scan_folder_entries(&start).await;
-                                            app.set_folder_entries(entries);
-                                            // Change mode to indicate we're picking for cleanup
-                                            app.input_mode = InputMode::WorktreeCleanupRepoPicker;
+                                        KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                            // Duplicate current session (same folder, same agent)
+                                            if let Some(session) = app.sessions.selected_session() {
+                                                let agent_type = session.agent_type;
+                                                let cwd = session.cwd.clone();
+                                                let is_worktree = session.is_worktree;
+                                                spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
+                                            }
                                         }
+
                                         // TODO: 'r' for resume - waiting for session/load ACP support
                                         // KeyCode::Char('r') => {
                                         //     let sessions = scan_resumable_sessions().await;
@@ -673,6 +883,33 @@ where
                                     KeyCode::Char('k') | KeyCode::Up => {
                                         if let Some(picker) = &mut app.worktree_picker {
                                             picker.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Char('c') => {
+                                        // Open cleanup for worktrees in the picker
+                                        // Re-scan with fetch to get accurate merge status
+                                        let worktree_dir = app.worktree_config.worktree_dir.clone();
+                                        app.close_worktree_picker();
+                                        
+                                        let worktree_entries = scan_worktrees(&worktree_dir, true).await;
+                                        let entries: Vec<CleanupEntry> = worktree_entries.iter()
+                                            .filter(|e| !e.is_create_new)
+                                            .map(|e| {
+                                                // Extract branch name from worktree name (format: repo-branch)
+                                                let branch = e.name.split_once('-')
+                                                    .map(|(_, b)| b.to_string());
+                                                CleanupEntry {
+                                                    path: e.path.clone(),
+                                                    branch,
+                                                    is_clean: e.is_clean,
+                                                    is_merged: e.is_merged,
+                                                    selected: false,
+                                                }
+                                            })
+                                            .collect();
+
+                                        if !entries.is_empty() {
+                                            app.open_worktree_cleanup(worktree_dir, entries);
                                         }
                                     }
                                     KeyCode::Enter => {
@@ -965,6 +1202,12 @@ where
                                                     let repo_path = entry.path.clone();
                                                     app.close_folder_picker();
 
+                                                    // Fetch first for accurate merge status
+                                                    log::log(&format!("Fetching from origin in {}", repo_path.display()));
+                                                    if let Err(e) = git::fetch_origin(&repo_path).await {
+                                                        log::log(&format!("Failed to fetch: {}", e));
+                                                    }
+
                                                     match git::list_worktrees(&repo_path).await {
                                                         Ok(worktrees) => {
                                                             if worktrees.is_empty() {
@@ -994,6 +1237,7 @@ where
                                 }
                             }
                             InputMode::WorktreeCleanup => {
+                                log::log(&format!("WorktreeCleanup key: {:?}", key.code));
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('q') => {
                                         app.close_worktree_cleanup();
@@ -1033,8 +1277,10 @@ where
                                         }
                                     }
                                     KeyCode::Enter => {
+                                        log::log("Enter pressed in WorktreeCleanup");
                                         // Perform cleanup of selected worktrees
                                         if let Some(cleanup) = &app.worktree_cleanup {
+                                            log::log(&format!("has_selection: {}", cleanup.has_selection()));
                                             if cleanup.has_selection() {
                                                 let repo_path = cleanup.repo_path.clone();
                                                 let delete_branches = cleanup.delete_branches;
@@ -1070,16 +1316,63 @@ where
                                 }
                             }
                             InputMode::Insert => {
+                                // Check if there's a pending permission request
+                                let has_permission = app.sessions.selected_session()
+                                    .map(|s| s.pending_permission.is_some())
+                                    .unwrap_or(false);
+
+                                // Check if there's a pending question
+                                let has_question = app.sessions.selected_session()
+                                    .map(|s| s.pending_question.is_some())
+                                    .unwrap_or(false);
+
                                 match key.code {
                                     KeyCode::Esc => {
                                         app.exit_insert_mode();
                                         app.clear_attachments();
                                     }
                                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+C: clear input and exit insert mode
+                                        // Ctrl+C: clear input but stay in insert mode
                                         app.take_input();
                                         app.clear_attachments();
-                                        app.exit_insert_mode();
+                                    }
+                                    KeyCode::Enter if has_permission => {
+                                        // Handle permission approval (same as normal mode)
+                                        if let Some(session) = app.sessions.selected_session_mut() {
+                                            if let Some(perm) = &session.pending_permission {
+                                                let option_id = perm.selected_option()
+                                                    .or_else(|| perm.allow_once_option())
+                                                    .map(|o| PermissionOptionId::from(o.option_id.clone()));
+                                                let request_id = perm.request_id;
+                                                let session_id = session.id.clone();
+                                                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                    let _ = cmd_tx.send(AgentCommand::PermissionResponse {
+                                                        request_id,
+                                                        option_id,
+                                                    }).await;
+                                                }
+                                                session.pending_permission = None;
+                                                session.state = SessionState::Prompting;
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Enter if has_question => {
+                                        // Handle question submission (same as normal mode)
+                                        if let Some(session) = app.sessions.selected_session_mut() {
+                                            if let Some(question) = &session.pending_question {
+                                                let answer = question.get_answer();
+                                                let request_id = question.request_id;
+                                                let session_id = session.id.clone();
+                                                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                    let _ = cmd_tx.send(AgentCommand::AskUserResponse {
+                                                        request_id,
+                                                        answer,
+                                                    }).await;
+                                                }
+                                                session.pending_question = None;
+                                                session.state = SessionState::Prompting;
+                                            }
+                                        }
                                     }
                                     KeyCode::Enter => {
                                         let text = app.take_input();
@@ -1241,11 +1534,11 @@ where
             }
 
             // Agent events
-            Some((session_idx, event)) = agent_rx.recv() => {
-                let result = handle_agent_event(app, session_idx, event);
+            Some((session_id, event)) = agent_rx.recv() => {
+                let result = handle_agent_event(app, &session_id, event);
                 // Handle auto-accept permission responses
                 if let EventResult::AutoAcceptPermission { request_id, option_id } = result {
-                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
                         let _ = cmd_tx.send(AgentCommand::PermissionResponse {
                             request_id,
                             option_id: Some(option_id),
@@ -1264,32 +1557,33 @@ where
 
 async fn spawn_agent_in_dir(
     app: &mut App,
-    agent_tx: &mpsc::Sender<(usize, AgentEvent)>,
-    agent_commands: &mut HashMap<usize, mpsc::Sender<AgentCommand>>,
+    agent_tx: &mpsc::Sender<(String, AgentEvent)>,
+    agent_commands: &mut HashMap<String, mpsc::Sender<AgentCommand>>,
     agent_type: AgentType,
     cwd: std::path::PathBuf,
     is_worktree: bool,
 ) -> Result<()> {
-    let session_idx = app.spawn_session(agent_type, cwd.clone(), is_worktree);
+    let session_id = app.spawn_session(agent_type, cwd.clone(), is_worktree);
 
     // Detect git branch
     let branch = get_git_branch(&cwd).await;
-    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+    if let Some(session) = app.sessions.get_by_id_mut(&session_id) {
         session.git_branch = branch;
     }
 
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
-    agent_commands.insert(session_idx, cmd_tx.clone());
+    agent_commands.insert(session_id.clone(), cmd_tx.clone());
 
     // Event channel for this agent
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
 
-    // Forward events to main channel
+    // Forward events to main channel (using session_id for stable routing)
     let main_tx = agent_tx.clone();
+    let session_id_for_events = session_id.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            if main_tx.send((session_idx, event)).await.is_err() {
+            if main_tx.send((session_id_for_events.clone(), event)).await.is_err() {
                 break;
             }
         }
@@ -1378,36 +1672,36 @@ async fn spawn_agent_in_dir(
 
 async fn spawn_agent_with_resume(
     app: &mut App,
-    agent_tx: &mpsc::Sender<(usize, AgentEvent)>,
-    agent_commands: &mut HashMap<usize, mpsc::Sender<AgentCommand>>,
+    agent_tx: &mpsc::Sender<(String, AgentEvent)>,
+    agent_commands: &mut HashMap<String, mpsc::Sender<AgentCommand>>,
     agent_type: AgentType,
     resume_info: ResumeInfo,
 ) -> Result<()> {
     let cwd = resume_info.cwd.clone();
-    let session_id = resume_info.session_id.clone();
+    let resume_session_id = resume_info.session_id.clone();
     // Check if cwd is inside the worktree directory
     let is_worktree = cwd.starts_with(&app.worktree_config.worktree_dir);
-    let session_idx = app.spawn_session(agent_type, cwd.clone(), is_worktree);
+    let session_id = app.spawn_session(agent_type, cwd.clone(), is_worktree);
 
     // Detect git branch
     let branch = get_git_branch(&cwd).await;
-    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+    if let Some(session) = app.sessions.get_by_id_mut(&session_id) {
         session.git_branch = branch;
-        session.id = session_id.clone(); // Pre-set the session ID
     }
 
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
-    agent_commands.insert(session_idx, cmd_tx.clone());
+    agent_commands.insert(session_id.clone(), cmd_tx.clone());
 
     // Event channel for this agent
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
 
-    // Forward events to main channel
+    // Forward events to main channel (using session_id for stable routing)
     let main_tx = agent_tx.clone();
+    let session_id_for_events = session_id.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            if main_tx.send((session_idx, event)).await.is_err() {
+            if main_tx.send((session_id_for_events.clone(), event)).await.is_err() {
                 break;
             }
         }
@@ -1415,7 +1709,6 @@ async fn spawn_agent_with_resume(
 
     // Spawn the agent task with session resume
     let cwd_clone = cwd.clone();
-    let session_id_clone = session_id.clone();
     tokio::spawn(async move {
         match AgentConnection::spawn(agent_type, &cwd_clone, event_tx.clone()).await {
             Ok(mut conn) => {
@@ -1428,7 +1721,7 @@ async fn spawn_agent_with_resume(
                 }
 
                 // Load existing session
-                if let Err(e) = conn.load_session(&session_id_clone, cwd_clone.to_str().unwrap_or(".")).await {
+                if let Err(e) = conn.load_session(&resume_session_id, cwd_clone.to_str().unwrap_or(".")).await {
                     let _ = event_tx.send(AgentEvent::Error {
                         message: format!("Session load failed: {}", e),
                     }).await;
@@ -1497,16 +1790,14 @@ async fn spawn_agent_with_resume(
 
 async fn send_prompt(
     app: &mut App,
-    agent_commands: &HashMap<usize, mpsc::Sender<AgentCommand>>,
+    agent_commands: &HashMap<String, mpsc::Sender<AgentCommand>>,
     text: &str,
 ) {
-    let session_idx = app.sessions.selected_index();
-
     // Take attachments before borrowing session
     let attachments = std::mem::take(&mut app.attachments);
     let has_attachments = !attachments.is_empty();
 
-    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+    if let Some(session) = app.sessions.selected_session_mut() {
         // Add spacing before user message
         session.add_output(String::new(), OutputType::Text);
 
@@ -1521,6 +1812,8 @@ async fn send_prompt(
             session.add_output(format!("> {}", text), OutputType::UserInput);
         }
         session.state = SessionState::Prompting;
+
+        let session_id = session.id.clone();
 
         // Build content blocks
         if has_attachments {
@@ -1540,17 +1833,17 @@ async fn send_prompt(
             }
 
             // Send with content blocks
-            if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+            if let Some(cmd_tx) = agent_commands.get(&session_id) {
                 let _ = cmd_tx.send(AgentCommand::PromptWithContent {
-                    session_id: session.id.clone(),
+                    session_id,
                     content,
                 }).await;
             }
         } else {
             // Send simple text prompt
-            if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+            if let Some(cmd_tx) = agent_commands.get(&session_id) {
                 let _ = cmd_tx.send(AgentCommand::Prompt {
-                    session_id: session.id.clone(),
+                    session_id,
                     text: text.to_string(),
                 }).await;
             }
@@ -1564,14 +1857,18 @@ enum EventResult {
     AutoAcceptPermission { request_id: u64, option_id: PermissionOptionId },
 }
 
-fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> EventResult {
+fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> EventResult {
     // Get these values before taking mutable borrow of sessions
-    let selected_idx = app.sessions.selected_index();
     let is_insert_mode = app.input_mode == InputMode::Insert;
     let input_buffer = app.input_buffer.clone();
     let cursor_position = app.cursor_position;
 
-    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+    // Check if this session is the currently selected one
+    let is_selected_session = app.sessions.selected_session()
+        .map(|s| s.id == session_id)
+        .unwrap_or(false);
+
+    if let Some(session) = app.sessions.get_by_id_mut(session_id) {
         match event {
             AgentEvent::Initialized { agent_info, agent_capabilities } => {
                 session.state = SessionState::Initializing;
@@ -1584,10 +1881,9 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     }
                 }
                 if let Some(caps) = agent_capabilities {
-                    session.add_output(
-                        format!("Agent capabilities: {}", serde_json::to_string_pretty(&caps).unwrap_or_else(|_| caps.to_string())),
-                        OutputType::Text,
-                    );
+                    // Format capabilities nicely
+                    let formatted = format_agent_capabilities(&caps);
+                    session.add_output(formatted, OutputType::Text);
                 }
             }
             AgentEvent::SessionCreated { session_id, models } => {
@@ -1611,10 +1907,6 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                         // Silently ignore
                     }
                     SessionUpdate::ToolCall { tool_call_id, title, raw_description, .. } => {
-                        let title_str = title
-                            .filter(|t| t != "undefined" && !t.is_empty())
-                            .unwrap_or_else(|| "Tool".to_string());
-
                         // Helper to strip all backticks from a string
                         fn strip_backticks(s: &str) -> String {
                             s.replace('`', "")
@@ -1630,18 +1922,59 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             }
                         }
 
+                        // Helper to check if a string is effectively "undefined" or empty
+                        fn is_undefined_or_empty(s: &str) -> bool {
+                            let trimmed = s.trim();
+                            trimmed.is_empty() || trimmed == "undefined" || trimmed == "null"
+                        }
+
+                        // Filter out undefined/empty titles
+                        let title_str = title
+                            .filter(|t| !is_undefined_or_empty(t))
+                            .unwrap_or_else(|| "Tool".to_string());
+
+                        // Helper to clean description by removing "undefined" segments
+                        fn clean_description(desc: &str) -> Option<String> {
+                            // Split by common separators and filter out undefined parts
+                            let parts: Vec<&str> = desc.split(&[',', ':'][..])
+                                .map(|p| p.trim())
+                                .filter(|p| !is_undefined_or_empty(p) && !p.contains("undefined"))
+                                .collect();
+                            if parts.is_empty() {
+                                None
+                            } else {
+                                Some(parts.join(", "))
+                            }
+                        }
+
                         // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" or "Edit `file.rs`" into name and description
                         let (name, description) = if let Some(paren_pos) = title_str.find('(') {
-                            let raw_name = strip_backticks(&title_str[..paren_pos]);
-                            let name = clean_tool_name(&raw_name);
-                            let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
-                            // Strip backticks from description
-                            let desc = strip_backticks(&desc);
-                            (name.to_string(), if desc.is_empty() { None } else { Some(desc) })
+                            let raw_name = strip_backticks(&title_str[..paren_pos]).trim().to_string();
+                            // Check if the name part is undefined/empty
+                            if is_undefined_or_empty(&raw_name) {
+                                ("Tool".to_string(), None)
+                            } else {
+                                let name = clean_tool_name(&raw_name);
+                                let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
+                                // Strip backticks and check for undefined in description
+                                let desc = strip_backticks(&desc);
+                                let desc = clean_description(&desc);
+                                // Map common tool names
+                                let mapped_name = match name {
+                                    "Terminal" => "Bash",
+                                    "Read File" => "Read",
+                                    "Write File" => "Write",
+                                    "Edit File" => "Edit",
+                                    "grep" => "Grep",
+                                    "glob" => "Glob",
+                                    other => other,
+                                };
+                                (mapped_name.to_string(), desc)
+                            }
                         } else if title_str.starts_with('`') && title_str.ends_with('`') {
                             // Command in backticks like `cd /path && cargo build`
                             let cmd = strip_backticks(&title_str);
-                            ("Bash".to_string(), Some(cmd))
+                            ("Bash".to_string(), if is_undefined_or_empty(&cmd) { None } else { Some(cmd) })
                         } else if let Some(backtick_pos) = title_str.find(" `") {
                             // Format like "Edit `file.rs`" - tool name followed by backtick-wrapped arg
                             let raw_name = &title_str[..backtick_pos];
@@ -1652,9 +1985,11 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                                 "Read File" => "Read",
                                 "Write File" => "Write",
                                 "Edit File" => "Edit",
+                                "grep" => "Grep",
+                                "glob" => "Glob",
                                 other => other,
                             };
-                            (mapped_name.to_string(), if desc.is_empty() { None } else { Some(desc) })
+                            (mapped_name.to_string(), if is_undefined_or_empty(&desc) { None } else { Some(desc) })
                         } else {
                             // Map common tool names and strip any stray backticks
                             let clean_title = strip_backticks(&title_str);
@@ -1664,6 +1999,8 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                                 "Read File" => "Read",
                                 "Write File" => "Write",
                                 "Edit File" => "Edit",
+                                "grep" => "Grep",
+                                "glob" => "Glob",
                                 other => other,
                             };
                             (mapped_name.to_string(), None)
@@ -1671,7 +2008,20 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
 
                         // Use raw_description if no description was parsed from title
                         // This helps with tools like Task that send description in rawInput
-                        let description = description.or(raw_description);
+                        // Also filter out undefined values from raw_description
+                        let raw_description = raw_description.filter(|d| !is_undefined_or_empty(d));
+                        
+                        // For Read/Grep/Glob tools, prefer raw_description (file_path/pattern) over parsed description
+                        // because the title often contains "undefined" or just line numbers
+                        let description = match name.as_str() {
+                            "Read" | "Grep" | "Glob" => raw_description.or(description),
+                            _ => description.or(raw_description),
+                        };
+
+                        // Final safety filter: remove any description containing "undefined"
+                        let description = description.filter(|d| {
+                            !d.contains("undefined") && !d.trim().is_empty()
+                        });
 
                         // Only add spacing for new tool calls, not updates
                         let is_new = !session.has_tool_call(&tool_call_id);
@@ -1687,6 +2037,9 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             if session.active_tool_call_id.as_ref() == Some(&tool_call_id) {
                                 session.complete_active_tool();
                             }
+                        } else if status == "error" || status == "failed" {
+                            // Mark the tool as failed
+                            session.mark_tool_failed(&tool_call_id);
                         } else if !status.trim().is_empty() && status != "in_progress" && status != "pending" {
                             // Only show meaningful status updates (not lifecycle states)
                             session.add_tool_output(status);
@@ -1718,8 +2071,10 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     // Find the first allow_once option
                     if let Some(option) = options.iter().find(|o| o.kind == crate::acp::PermissionKind::AllowOnce) {
                         session.state = SessionState::Prompting;
-                        // Auto-scroll to bottom
-                        session.scroll_to_bottom();
+                        // Auto-scroll to bottom only if already at bottom
+                        if session.scroll_offset == usize::MAX {
+                            session.scroll_to_bottom();
+                        }
                         return EventResult::AutoAcceptPermission {
                             request_id,
                             option_id: PermissionOptionId::from(option.option_id.clone()),
@@ -1738,7 +2093,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 });
 
                 // Save input buffer if user was typing in this session
-                if session_idx == selected_idx && is_insert_mode && !input_buffer.is_empty() {
+                if is_selected_session && is_insert_mode && !input_buffer.is_empty() {
                     session.save_input(input_buffer.clone(), cursor_position);
                 }
             }
@@ -1759,7 +2114,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 ));
 
                 // Save input buffer if user was typing in this session
-                if session_idx == selected_idx && is_insert_mode && !input_buffer.is_empty() {
+                if is_selected_session && is_insert_mode && !input_buffer.is_empty() {
                     session.save_input(input_buffer.clone(), cursor_position);
                 }
             }
@@ -1770,9 +2125,8 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 // Add blank line after response for spacing
                 session.add_output(String::new(), OutputType::Text);
             }
-            AgentEvent::FileWritten { path, diff, .. } => {
-                // Show the file path and diff for the edit
-                session.add_output(format!("Wrote: {}", path), OutputType::Text);
+            AgentEvent::FileWritten { diff, .. } => {
+                // Show the diff (file path is already shown in the tool call)
                 session.add_tool_output(diff);
             }
             AgentEvent::Error { message } => {
@@ -1784,8 +2138,10 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 session.add_output("Disconnected".to_string(), OutputType::Text);
             }
         }
-        // Auto-scroll to bottom on new output
-        session.scroll_to_bottom();
+        // Auto-scroll to bottom only if already at bottom (not scrolled up)
+        if session.scroll_offset == usize::MAX {
+            session.scroll_to_bottom();
+        }
     }
     EventResult::None
 }

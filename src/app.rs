@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::picker::Picker;
 use crate::session::{Session, SessionManager, AgentType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,38 +69,46 @@ impl SessionPickerState {
         Self { sessions, selected: 0 }
     }
 
-    pub fn select_next(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected = (self.selected + 1) % self.sessions.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.sessions.len() - 1);
-        }
-    }
-
     pub fn selected_session(&self) -> Option<&ResumableSession> {
-        self.sessions.get(self.selected)
+        self.selected_item()
+    }
+}
+
+impl Picker for SessionPickerState {
+    type Item = ResumableSession;
+
+    fn items(&self) -> &[Self::Item] {
+        &self.sessions
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
     }
 }
 
 impl FolderPickerState {
-    pub fn select_next(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = (self.selected + 1) % self.entries.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.entries.len() - 1);
-        }
-    }
-
     pub fn selected_entry(&self) -> Option<&FolderEntry> {
-        self.entries.get(self.selected)
+        self.selected_item()
+    }
+}
+
+impl Picker for FolderPickerState {
+    type Item = FolderEntry;
+
+    fn items(&self) -> &[Self::Item] {
+        &self.entries
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
     }
 }
 
@@ -111,27 +120,36 @@ pub struct AgentPickerState {
     pub is_worktree: bool,
 }
 
+/// Static list of available agents
+static AVAILABLE_AGENTS: &[AgentType] = &[AgentType::ClaudeCode, AgentType::GeminiCli];
+
 impl AgentPickerState {
     pub fn new(cwd: PathBuf, is_worktree: bool) -> Self {
         Self { cwd, selected: 0, is_worktree }
     }
 
     pub fn agents() -> &'static [AgentType] {
-        &[AgentType::ClaudeCode, AgentType::GeminiCli]
-    }
-
-    pub fn select_next(&mut self) {
-        let len = Self::agents().len();
-        self.selected = (self.selected + 1) % len;
-    }
-
-    pub fn select_prev(&mut self) {
-        let len = Self::agents().len();
-        self.selected = self.selected.checked_sub(1).unwrap_or(len - 1);
+        AVAILABLE_AGENTS
     }
 
     pub fn selected_agent(&self) -> AgentType {
-        Self::agents()[self.selected]
+        self.selected_item().copied().unwrap_or(AgentType::ClaudeCode)
+    }
+}
+
+impl Picker for AgentPickerState {
+    type Item = AgentType;
+
+    fn items(&self) -> &[Self::Item] {
+        AVAILABLE_AGENTS
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
     }
 }
 
@@ -141,6 +159,10 @@ pub struct WorktreeEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_create_new: bool,
+    /// Whether the worktree has no uncommitted changes
+    pub is_clean: bool,
+    /// Whether the branch is merged into the default branch
+    pub is_merged: bool,
 }
 
 /// State for the worktree picker
@@ -155,20 +177,24 @@ impl WorktreePickerState {
         Self { entries, selected: 0 }
     }
 
-    pub fn select_next(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = (self.selected + 1) % self.entries.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.entries.len() - 1);
-        }
-    }
-
     pub fn selected_entry(&self) -> Option<&WorktreeEntry> {
-        self.entries.get(self.selected)
+        self.selected_item()
+    }
+}
+
+impl Picker for WorktreePickerState {
+    type Item = WorktreeEntry;
+
+    fn items(&self) -> &[Self::Item] {
+        &self.entries
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
     }
 }
 
@@ -209,18 +235,6 @@ impl WorktreeCleanupState {
         }
     }
 
-    pub fn select_next(&mut self) {
-        if !self.entries.is_empty() {
-            self.cursor = (self.cursor + 1) % self.entries.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.entries.is_empty() {
-            self.cursor = self.cursor.checked_sub(1).unwrap_or(self.entries.len() - 1);
-        }
-    }
-
     pub fn toggle_selected(&mut self) {
         if let Some(entry) = self.entries.get_mut(self.cursor) {
             entry.selected = !entry.selected;
@@ -255,6 +269,22 @@ impl WorktreeCleanupState {
 
     pub fn cleanable_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_clean && e.is_merged).count()
+    }
+}
+
+impl Picker for WorktreeCleanupState {
+    type Item = CleanupEntry;
+
+    fn items(&self) -> &[Self::Item] {
+        &self.entries
+    }
+
+    fn selected_index(&self) -> usize {
+        self.cursor
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.cursor = index;
     }
 }
 
@@ -294,21 +324,9 @@ impl BranchInputState {
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
-    pub fn select_next(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1) % self.filtered.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.filtered.len() - 1);
-        }
-    }
-
     /// Accept the currently selected branch
     pub fn accept_selection(&mut self) {
-        if let Some(branch) = self.filtered.get(self.selected) {
+        if let Some(branch) = self.selected_item() {
             self.input = branch.name.clone();
             self.cursor_position = self.input.len();
         }
@@ -318,6 +336,22 @@ impl BranchInputState {
     /// Get the branch name to use
     pub fn branch_name(&self) -> &str {
         &self.input
+    }
+}
+
+impl Picker for BranchInputState {
+    type Item = BranchEntry;
+
+    fn items(&self) -> &[Self::Item] {
+        &self.filtered
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
     }
 }
 
@@ -352,6 +386,38 @@ impl WorktreeConfig {
 /// Spinner frames for loading animation
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// A clickable region in the UI
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClickRegion {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl ClickRegion {
+    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+        Self { x, y, width, height }
+    }
+
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+/// Clickable areas in the UI, updated during each render
+#[derive(Debug, Clone, Default)]
+pub struct ClickAreas {
+    /// The input/prompt field area
+    pub input_field: ClickRegion,
+    /// The permission mode toggle area (e.g., "[tab] normal")
+    pub permission_mode: ClickRegion,
+    /// The model selector area (e.g., "[m] claude-3-5-sonnet")
+    pub model_selector: ClickRegion,
+    /// Session list items (index, region) - each session takes 3 lines
+    pub session_items: Vec<(usize, ClickRegion)>,
+}
+
 /// An image attachment ready to be sent with a prompt
 #[derive(Debug, Clone)]
 pub struct ImageAttachment {
@@ -377,6 +443,10 @@ pub struct App {
     pub selected_attachment: Option<usize>,
     pub start_dir: PathBuf,
     pub worktree_config: WorktreeConfig,
+    /// Clickable areas updated during each render
+    pub click_areas: ClickAreas,
+    /// Counter for generating unique session IDs
+    next_session_id: u64,
 }
 
 impl App {
@@ -398,6 +468,8 @@ impl App {
             selected_attachment: None,
             start_dir,
             worktree_config,
+            click_areas: ClickAreas::default(),
+            next_session_id: 1,
         }
     }
 
@@ -669,19 +741,20 @@ impl App {
         self.sessions.selected_session()
     }
 
-    /// Spawn a new session and return its index
-    pub fn spawn_session(&mut self, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> usize {
+    /// Spawn a new session and return its unique ID
+    pub fn spawn_session(&mut self, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> String {
         let name = cwd
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        let id = format!("session_{}", self.sessions.len() + 1);
-        let session = Session::new(id, name, agent_type, cwd, is_worktree);
+        let id = format!("session_{}", self.next_session_id);
+        self.next_session_id += 1;
+        let session = Session::new(id.clone(), name, agent_type, cwd, is_worktree);
 
         self.sessions.add_session(session);
-        self.sessions.len() - 1
+        id
     }
 
     /// Kill the currently selected session
@@ -702,14 +775,19 @@ impl App {
     /// Add a character to input buffer
     pub fn input_char(&mut self, c: char) {
         self.input_buffer.insert(self.cursor_position, c);
-        self.cursor_position += 1;
+        self.cursor_position += c.len_utf8();
     }
 
     /// Delete character before cursor
     pub fn input_backspace(&mut self) {
         if self.cursor_position > 0 {
-            self.cursor_position -= 1;
-            self.input_buffer.remove(self.cursor_position);
+            // Find the previous char boundary
+            let mut new_pos = self.cursor_position - 1;
+            while new_pos > 0 && !self.input_buffer.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.input_buffer.remove(new_pos);
+            self.cursor_position = new_pos;
         }
     }
 
@@ -723,14 +801,24 @@ impl App {
     /// Move cursor left
     pub fn input_left(&mut self) {
         if self.cursor_position > 0 {
-            self.cursor_position -= 1;
+            // Find the previous char boundary
+            let mut new_pos = self.cursor_position - 1;
+            while new_pos > 0 && !self.input_buffer.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.cursor_position = new_pos;
         }
     }
 
     /// Move cursor right
     pub fn input_right(&mut self) {
         if self.cursor_position < self.input_buffer.len() {
-            self.cursor_position += 1;
+            // Find the next char boundary
+            let mut new_pos = self.cursor_position + 1;
+            while new_pos < self.input_buffer.len() && !self.input_buffer.is_char_boundary(new_pos) {
+                new_pos += 1;
+            }
+            self.cursor_position = new_pos;
         }
     }
 

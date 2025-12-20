@@ -849,124 +849,46 @@ impl AgentConnection {
     }
 }
 
-/// Generate a unified diff between old and new content
-fn generate_diff(old: &str, new: &str, path: &str) -> String {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
+/// Generate a unified diff between old and new content with line numbers
+fn generate_diff(old: &str, new: &str, _path: &str) -> String {
+    use similar::{ChangeTag, TextDiff};
 
-    // Simple case: new file
-    if old.is_empty() {
-        let mut result = format!("--- /dev/null\n+++ {}\n", path);
-        if !new_lines.is_empty() {
-            result.push_str(&format!("@@ -0,0 +1,{} @@\n", new_lines.len()));
-            for line in &new_lines {
-                result.push_str(&format!("+{}\n", line));
-            }
-        }
-        return result;
+    let diff = TextDiff::from_lines(old, new);
+
+    // Check if there are any changes
+    if diff.iter_all_changes().all(|c| c.tag() == ChangeTag::Equal) {
+        return "No changes".to_string();
     }
 
-    // Build a simple line-based diff using longest common subsequence
-    let mut result = format!("--- {}\n+++ {}\n", path, path);
-    let mut hunks = Vec::new();
-    let mut i = 0;
-    let mut j = 0;
+    let mut result = String::new();
 
-    while i < old_lines.len() || j < new_lines.len() {
-        // Skip matching lines
-        while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
-            i += 1;
-            j += 1;
-        }
+    // Skip --- and +++ header lines since path is already shown in tool output
 
-        // If we're at the end, we're done
-        if i >= old_lines.len() && j >= new_lines.len() {
-            break;
-        }
+    // Generate unified diff with context (3 lines)
+    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+        // Hunk header
+        result.push_str(&format!("{}\n", hunk.header()));
 
-        // Found a difference - collect the hunk
-        let hunk_start_i = i;
-        let hunk_start_j = j;
+        // Hunk content with line numbers
+        for change in hunk.iter_changes() {
+            let (sign, old_line, new_line) = match change.tag() {
+                ChangeTag::Delete => ('-', change.old_index().map(|i| i + 1), None),
+                ChangeTag::Insert => ('+', None, change.new_index().map(|i| i + 1)),
+                ChangeTag::Equal => (' ', change.old_index().map(|i| i + 1), change.new_index().map(|i| i + 1)),
+            };
 
-        // Collect differing lines until we find a match or end
-        let mut old_hunk = Vec::new();
-        let mut new_hunk = Vec::new();
+            // Format line numbers: "old new" or spaces for missing
+            let line_info = match (old_line, new_line) {
+                (Some(o), Some(n)) => format!("{:>4} {:>4}", o, n),
+                (Some(o), None) => format!("{:>4}     ", o),
+                (None, Some(n)) => format!("     {:>4}", n),
+                (None, None) => "         ".to_string(),
+            };
 
-        // Simple approach: consume lines until we find matching context
-        loop {
-            // Look ahead for a matching sequence
-            let mut found_match = false;
-            for look_ahead in 0..3 {
-                if i + look_ahead < old_lines.len() && j + look_ahead < new_lines.len() {
-                    if old_lines[i + look_ahead] == new_lines[j + look_ahead] {
-                        // Consume non-matching lines up to this point
-                        for _ in 0..look_ahead {
-                            if i < old_lines.len() {
-                                old_hunk.push(old_lines[i]);
-                                i += 1;
-                            }
-                            if j < new_lines.len() {
-                                new_hunk.push(new_lines[j]);
-                                j += 1;
-                            }
-                        }
-                        found_match = true;
-                        break;
-                    }
-                }
-            }
-
-            if found_match {
-                break;
-            }
-
-            // No match found in lookahead, consume one line from each
-            if i < old_lines.len() && j < new_lines.len() {
-                if old_lines[i] != new_lines[j] {
-                    old_hunk.push(old_lines[i]);
-                    new_hunk.push(new_lines[j]);
-                    i += 1;
-                    j += 1;
-                } else {
-                    break;
-                }
-            } else if i < old_lines.len() {
-                old_hunk.push(old_lines[i]);
-                i += 1;
-            } else if j < new_lines.len() {
-                new_hunk.push(new_lines[j]);
-                j += 1;
-            } else {
-                break;
-            }
-        }
-
-        if !old_hunk.is_empty() || !new_hunk.is_empty() {
-            hunks.push((hunk_start_i, hunk_start_j, old_hunk, new_hunk));
+            // Format: "sign old_line new_line | content"
+            result.push_str(&format!("{}{} {}", sign, line_info, change));
         }
     }
 
-    // Format hunks
-    for (old_start, new_start, old_hunk, new_hunk) in hunks {
-        result.push_str(&format!(
-            "@@ -{},{} +{},{} @@\n",
-            old_start + 1,
-            old_hunk.len(),
-            new_start + 1,
-            new_hunk.len()
-        ));
-        for line in old_hunk {
-            result.push_str(&format!("-{}\n", line));
-        }
-        for line in new_hunk {
-            result.push_str(&format!("+{}\n", line));
-        }
-    }
-
-    if result.ends_with(&format!("+++ {}\n", path)) {
-        // No changes
-        "No changes".to_string()
-    } else {
-        result
-    }
+    result
 }

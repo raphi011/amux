@@ -43,6 +43,54 @@ pub enum SessionState {
     AwaitingUserInput,
 }
 
+impl SessionState {
+    /// Check if a transition to the target state is valid
+    pub fn can_transition_to(&self, target: SessionState) -> bool {
+        use SessionState::*;
+        match (self, target) {
+            // From Spawning
+            (Spawning, Initializing) => true,
+            (Spawning, Idle) => true, // Error/disconnect case
+            
+            // From Initializing
+            (Initializing, Idle) => true,
+            (Initializing, Prompting) => true, // Auto-prompt on init
+            
+            // From Idle
+            (Idle, Prompting) => true,
+            (Idle, Spawning) => false, // Can't go back to spawning
+            
+            // From Prompting
+            (Prompting, Idle) => true, // Prompt complete or cancelled
+            (Prompting, AwaitingPermission) => true,
+            (Prompting, AwaitingUserInput) => true,
+            
+            // From AwaitingPermission
+            (AwaitingPermission, Prompting) => true, // Permission granted
+            (AwaitingPermission, Idle) => true, // Permission denied
+            
+            // From AwaitingUserInput
+            (AwaitingUserInput, Prompting) => true, // Answer provided
+            (AwaitingUserInput, Idle) => true, // Cancelled
+            
+            // Self-transitions are always valid (no-op)
+            (a, b) if *a == b => true,
+            
+            _ => false,
+        }
+    }
+
+    /// Returns true if the session is waiting for user interaction
+    pub fn awaiting_user(&self) -> bool {
+        matches!(self, SessionState::AwaitingPermission | SessionState::AwaitingUserInput)
+    }
+
+    /// Returns true if the session can receive a new prompt
+    pub fn can_prompt(&self) -> bool {
+        matches!(self, SessionState::Idle)
+    }
+}
+
 /// Permission handling mode for a session
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PermissionMode {
@@ -262,6 +310,7 @@ pub enum OutputType {
         tool_call_id: String,
         name: String,
         description: Option<String>,
+        failed: bool,  // Whether the tool call failed
     },
     ToolOutput,  // Output from a tool (shown with └ connector)
     DiffAdd,     // Added line in diff (green)
@@ -285,7 +334,7 @@ impl Session {
             tokens_output: 0,
             output: vec![],
             last_activity: Some(Instant::now()),
-            scroll_offset: 0,
+            scroll_offset: usize::MAX,
             pending_permission: None,
             pending_question: None,
             plan_entries: vec![],
@@ -296,6 +345,35 @@ impl Session {
             current_model_id: None,
             saved_input: None,
         }
+    }
+
+    /// Transition to a new state, logging invalid transitions
+    /// 
+    /// This method validates the transition and logs a warning if the
+    /// transition is invalid (but still allows it for backward compatibility).
+    pub fn transition_to(&mut self, new_state: SessionState) {
+        if !self.state.can_transition_to(new_state) {
+            crate::log::log(&format!(
+                "Warning: Invalid state transition {:?} -> {:?} for session {}",
+                self.state, new_state, self.id
+            ));
+        }
+        self.state = new_state;
+    }
+
+    /// Check if the session has a pending permission request
+    pub fn has_pending_permission(&self) -> bool {
+        self.pending_permission.is_some()
+    }
+
+    /// Check if the session has a pending question
+    pub fn has_pending_question(&self) -> bool {
+        self.pending_question.is_some()
+    }
+
+    /// Check if the session is awaiting any user input
+    pub fn is_awaiting_user(&self) -> bool {
+        self.state.awaiting_user()
     }
 
     /// Save the current input buffer (called when permission/question interrupts)
@@ -400,7 +478,7 @@ impl Session {
     pub fn add_tool_call(&mut self, tool_call_id: String, name: String, description: Option<String>) {
         // Check if we already have this tool call - if so, update it
         for line in self.output.iter_mut().rev() {
-            if let OutputType::ToolCall { tool_call_id: existing_id, name: existing_name, description: existing_desc } = &mut line.line_type {
+            if let OutputType::ToolCall { tool_call_id: existing_id, name: existing_name, description: existing_desc, .. } = &mut line.line_type {
                 if existing_id == &tool_call_id {
                     // Update with better info if available
                     if description.is_some() && existing_desc.is_none() {
@@ -420,7 +498,7 @@ impl Session {
         self.active_tool_call_id = Some(tool_call_id.clone());
         self.output.push(OutputLine {
             content: String::new(),
-            line_type: OutputType::ToolCall { tool_call_id, name, description },
+            line_type: OutputType::ToolCall { tool_call_id, name, description, failed: false },
         });
         self.last_activity = Some(Instant::now());
     }
@@ -428,6 +506,22 @@ impl Session {
     /// Mark the current tool as complete
     pub fn complete_active_tool(&mut self) {
         self.active_tool_call_id = None;
+    }
+
+    /// Mark a tool call as failed
+    pub fn mark_tool_failed(&mut self, tool_call_id: &str) {
+        for line in self.output.iter_mut().rev() {
+            if let OutputType::ToolCall { tool_call_id: existing_id, failed, .. } = &mut line.line_type {
+                if existing_id == tool_call_id {
+                    *failed = true;
+                    break;
+                }
+            }
+        }
+        // Also complete the tool so it stops spinning
+        if self.active_tool_call_id.as_ref() == Some(&tool_call_id.to_string()) {
+            self.active_tool_call_id = None;
+        }
     }
 
     /// Add tool output, parsing for diff content
@@ -439,24 +533,33 @@ impl Session {
         }
 
         // Check if this looks like diff content
+        // Diff lines from generate_diff have format: "<sign><line_info> <content>"
+        // where sign is '+', '-', or ' ' and line_info is like "  42   43"
         for line in content.lines() {
-            let trimmed = line.trim_start();
-            let line_type = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-                OutputType::DiffAdd
-            } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
-                OutputType::DiffRemove
-            } else if trimmed.starts_with("@@") || trimmed.starts_with("diff ")
-                    || trimmed.starts_with("index ") || trimmed.starts_with("---")
-                    || trimmed.starts_with("+++") {
-                OutputType::DiffHeader
+            let (line_type, stored_content) = if line.starts_with('+') && !line.starts_with("+++") {
+                // Added line - strip the '+' prefix since we use color coding
+                (OutputType::DiffAdd, line[1..].to_string())
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                // Removed line - strip the '-' prefix since we use color coding
+                (OutputType::DiffRemove, line[1..].to_string())
+            } else if line.starts_with(' ') && line.len() > 10 && line.chars().skip(1).take(9).all(|c| c.is_ascii_digit() || c == ' ') {
+                // Context line - starts with space followed by line numbers (e.g., " 123  456 ")
+                // Strip the leading space to align with add/remove lines
+                (OutputType::DiffContext, line[1..].to_string())
+            } else if line.starts_with("@@") {
+                // Skip @@ hunk headers entirely
+                continue;
+            } else if line.starts_with("diff ") || line.starts_with("index ")
+                    || line.starts_with("---") || line.starts_with("+++") {
+                (OutputType::DiffHeader, line.to_string())
             } else if line.starts_with("Added ") || line.starts_with("Removed ")
                     || line.contains(" lines,") {
-                OutputType::DiffHeader
+                (OutputType::DiffHeader, line.to_string())
             } else {
-                OutputType::ToolOutput
+                (OutputType::ToolOutput, line.to_string())
             };
             self.output.push(OutputLine {
-                content: line.to_string(),
+                content: stored_content,
                 line_type,
             });
         }
@@ -477,7 +580,7 @@ impl Session {
             tokens_output: 0,
             output: vec![],
             last_activity: None,
-            scroll_offset: 0,
+            scroll_offset: usize::MAX,
             pending_permission: None,
             pending_question: None,
             plan_entries: vec![],

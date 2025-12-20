@@ -95,4 +95,14 @@ impl SessionManager {
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
+
+    /// Find a session by its unique ID and return a mutable reference
+    pub fn get_by_id_mut(&mut self, id: &str) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Find a session by its unique ID
+    pub fn get_by_id(&self, id: &str) -> Option<&Session> {
+        self.sessions.iter().find(|s| s.id == id)
+    }
 }

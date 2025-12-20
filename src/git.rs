@@ -228,31 +228,27 @@ pub async fn is_worktree_clean(worktree_path: &Path) -> Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
-/// Check if a branch has been merged into main or master
+/// Check if a branch has been merged into origin's default branch
 pub async fn is_branch_merged(repo_path: &Path, branch_name: &str) -> Result<bool> {
     // First, determine the default branch (main or master)
     let default_branch = get_default_branch(repo_path).await?;
 
-    // Check if the branch is merged into the default branch
+    // Check if the branch tip is an ancestor of origin/<default_branch>
+    // This is more reliable than `git branch --merged` as it checks against
+    // the remote branch, which reflects merged PRs after a fetch
     let output = tokio::process::Command::new("git")
-        .args(["branch", "--merged", &default_branch])
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            branch_name,
+            &format!("origin/{}", default_branch),
+        ])
         .current_dir(repo_path)
         .output()
         .await?;
 
-    if !output.status.success() {
-        bail!("Failed to check merged branches");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let branch = line.trim().trim_start_matches("* ");
-        if branch == branch_name {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+    // Exit code 0 = is ancestor (merged), 1 = not ancestor, other = error
+    Ok(output.status.success())
 }
 
 /// Get the default branch (main or master)
@@ -306,6 +302,22 @@ pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("Failed to remove worktree: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Fetch from origin with prune to update remote refs
+pub async fn fetch_origin(repo_path: &Path) -> Result<()> {
+    let output = tokio::process::Command::new("git")
+        .args(["fetch", "--prune", "origin"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to fetch from origin: {}", stderr.trim());
     }
 
     Ok(())
