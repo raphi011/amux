@@ -9,6 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 
+use serde_json::Value;
+
 use super::protocol::{*, AskUserRequestParams, AskUserOption, AskUserResponse};
 use crate::log;
 use crate::session::AgentType;
@@ -29,6 +31,7 @@ type TerminalCounter = Arc<Mutex<u64>>;
 pub enum AgentEvent {
     Initialized {
         agent_info: Option<AgentInfo>,
+        agent_capabilities: Option<Value>,
     },
     SessionCreated {
         session_id: String,
@@ -54,6 +57,11 @@ pub enum AgentEvent {
     },
     PromptComplete {
         stop_reason: StopReason,
+    },
+    FileWritten {
+        session_id: String,
+        path: String,
+        diff: String,
     },
     Error {
         message: String,
@@ -140,6 +148,7 @@ impl AgentConnection {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::Initialized {
                                         agent_info: init.agent_info,
+                                        agent_capabilities: init.agent_capabilities,
                                     })
                                     .await;
                             } else if let Ok(session) = serde_json::from_value::<NewSessionResult>(result.clone()) {
@@ -317,8 +326,23 @@ impl AgentConnection {
                             if let Some(params) = params {
                                 match serde_json::from_value::<FsWriteTextFileParams>(params.clone()) {
                                     Ok(fs_params) => {
+                                        // Read old content for diff (if file exists)
+                                        let old_content = tokio::fs::read_to_string(&fs_params.path).await.ok();
+
                                         let result = match tokio::fs::write(&fs_params.path, &fs_params.content).await {
                                             Ok(()) => {
+                                                // Generate and send diff
+                                                let diff = generate_diff(
+                                                    old_content.as_deref().unwrap_or(""),
+                                                    &fs_params.content,
+                                                    &fs_params.path,
+                                                );
+                                                let _ = event_tx_clone.send(AgentEvent::FileWritten {
+                                                    session_id: fs_params.session_id.clone(),
+                                                    path: fs_params.path.clone(),
+                                                    diff,
+                                                }).await;
+
                                                 serde_json::json!({
                                                     "jsonrpc": "2.0",
                                                     "id": id,
@@ -822,5 +846,127 @@ impl AgentConnection {
     pub async fn kill(&mut self) -> Result<()> {
         self.child.kill().await?;
         Ok(())
+    }
+}
+
+/// Generate a unified diff between old and new content
+fn generate_diff(old: &str, new: &str, path: &str) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Simple case: new file
+    if old.is_empty() {
+        let mut result = format!("--- /dev/null\n+++ {}\n", path);
+        if !new_lines.is_empty() {
+            result.push_str(&format!("@@ -0,0 +1,{} @@\n", new_lines.len()));
+            for line in &new_lines {
+                result.push_str(&format!("+{}\n", line));
+            }
+        }
+        return result;
+    }
+
+    // Build a simple line-based diff using longest common subsequence
+    let mut result = format!("--- {}\n+++ {}\n", path, path);
+    let mut hunks = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < old_lines.len() || j < new_lines.len() {
+        // Skip matching lines
+        while i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
+            i += 1;
+            j += 1;
+        }
+
+        // If we're at the end, we're done
+        if i >= old_lines.len() && j >= new_lines.len() {
+            break;
+        }
+
+        // Found a difference - collect the hunk
+        let hunk_start_i = i;
+        let hunk_start_j = j;
+
+        // Collect differing lines until we find a match or end
+        let mut old_hunk = Vec::new();
+        let mut new_hunk = Vec::new();
+
+        // Simple approach: consume lines until we find matching context
+        loop {
+            // Look ahead for a matching sequence
+            let mut found_match = false;
+            for look_ahead in 0..3 {
+                if i + look_ahead < old_lines.len() && j + look_ahead < new_lines.len() {
+                    if old_lines[i + look_ahead] == new_lines[j + look_ahead] {
+                        // Consume non-matching lines up to this point
+                        for _ in 0..look_ahead {
+                            if i < old_lines.len() {
+                                old_hunk.push(old_lines[i]);
+                                i += 1;
+                            }
+                            if j < new_lines.len() {
+                                new_hunk.push(new_lines[j]);
+                                j += 1;
+                            }
+                        }
+                        found_match = true;
+                        break;
+                    }
+                }
+            }
+
+            if found_match {
+                break;
+            }
+
+            // No match found in lookahead, consume one line from each
+            if i < old_lines.len() && j < new_lines.len() {
+                if old_lines[i] != new_lines[j] {
+                    old_hunk.push(old_lines[i]);
+                    new_hunk.push(new_lines[j]);
+                    i += 1;
+                    j += 1;
+                } else {
+                    break;
+                }
+            } else if i < old_lines.len() {
+                old_hunk.push(old_lines[i]);
+                i += 1;
+            } else if j < new_lines.len() {
+                new_hunk.push(new_lines[j]);
+                j += 1;
+            } else {
+                break;
+            }
+        }
+
+        if !old_hunk.is_empty() || !new_hunk.is_empty() {
+            hunks.push((hunk_start_i, hunk_start_j, old_hunk, new_hunk));
+        }
+    }
+
+    // Format hunks
+    for (old_start, new_start, old_hunk, new_hunk) in hunks {
+        result.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start + 1,
+            old_hunk.len(),
+            new_start + 1,
+            new_hunk.len()
+        ));
+        for line in old_hunk {
+            result.push_str(&format!("-{}\n", line));
+        }
+        for line in new_hunk {
+            result.push_str(&format!("+{}\n", line));
+        }
+    }
+
+    if result.ends_with(&format!("+++ {}\n", path)) {
+        // No changes
+        "No changes".to_string()
+    } else {
+        result
     }
 }

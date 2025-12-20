@@ -1573,7 +1573,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
 
     if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
         match event {
-            AgentEvent::Initialized { agent_info } => {
+            AgentEvent::Initialized { agent_info, agent_capabilities } => {
                 session.state = SessionState::Initializing;
                 if let Some(info) = agent_info {
                     if let Some(name) = info.name {
@@ -1582,6 +1582,12 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             OutputType::Text,
                         );
                     }
+                }
+                if let Some(caps) = agent_capabilities {
+                    session.add_output(
+                        format!("Agent capabilities: {}", serde_json::to_string_pretty(&caps).unwrap_or_else(|_| caps.to_string())),
+                        OutputType::Text,
+                    );
                 }
             }
             AgentEvent::SessionCreated { session_id, models } => {
@@ -1763,6 +1769,11 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 session.complete_active_tool();
                 // Add blank line after response for spacing
                 session.add_output(String::new(), OutputType::Text);
+            }
+            AgentEvent::FileWritten { path, diff, .. } => {
+                // Show the file path and diff for the edit
+                session.add_output(format!("Wrote: {}", path), OutputType::Text);
+                session.add_tool_output(diff);
             }
             AgentEvent::Error { message } => {
                 session.state = SessionState::Idle;
