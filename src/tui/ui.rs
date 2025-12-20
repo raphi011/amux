@@ -670,10 +670,18 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &App) {
             PermissionMode::Plan => ("plan", LOGO_GOLD),
             PermissionMode::AcceptAll => ("accept all", LOGO_MINT),
         };
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled("[tab] ", Style::new().fg(TEXT_DIM)),
             Span::styled(mode_text, Style::new().fg(mode_color)),
-        ])
+        ];
+
+        // Add model info if available
+        if let Some(model_name) = session.current_model_name() {
+            spans.push(Span::styled("  [m] ", Style::new().fg(TEXT_DIM)));
+            spans.push(Span::styled(model_name, Style::new().fg(LOGO_LIGHT_BLUE)));
+        }
+
+        Line::from(spans)
     } else {
         Line::from(vec![])
     };

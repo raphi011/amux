@@ -134,6 +134,32 @@ pub struct LoadSessionParams {
 #[serde(rename_all = "camelCase")]
 pub struct NewSessionResult {
     pub session_id: String,
+    pub models: Option<ModelsState>,
+}
+
+/// Model selection state from session
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelsState {
+    pub available_models: Vec<ModelInfo>,
+    pub current_model_id: String,
+}
+
+/// Information about an available model
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub model_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Parameters for session/set_model
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModelParams {
+    pub session_id: String,
+    pub model_id: String,
 }
 
 // ============================================================================

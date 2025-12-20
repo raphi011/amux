@@ -27,6 +27,7 @@ pub enum AgentEvent {
     },
     SessionCreated {
         session_id: String,
+        models: Option<ModelsState>,
     },
     Update {
         session_id: String,
@@ -130,6 +131,7 @@ impl AgentConnection {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::SessionCreated {
                                         session_id: session.session_id,
+                                        models: session.models,
                                     })
                                     .await;
                             } else if let Ok(prompt) = serde_json::from_value::<PromptResult>(result.clone()) {
@@ -145,6 +147,7 @@ impl AgentConnection {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::SessionCreated {
                                         session_id: String::new(),
+                                        models: None,
                                     })
                                     .await;
                             }
@@ -675,6 +678,21 @@ impl AgentConnection {
         let json = serde_json::to_string(&response)?;
         self.tx.send(json).await?;
         Ok(())
+    }
+
+    /// Set the model for a session
+    pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<()> {
+        let params = SetModelParams {
+            session_id: session_id.to_string(),
+            model_id: model_id.to_string(),
+        };
+
+        let request = JsonRpcRequest::new(
+            self.next_id(),
+            "session/set_model",
+            Some(serde_json::to_value(params)?),
+        );
+        self.send(request).await
     }
 
     /// Kill the agent process

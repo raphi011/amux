@@ -138,7 +138,12 @@ pub struct Session {
     pub current_mode: Option<String>,
     pub active_tool_call_id: Option<String>,
     pub permission_mode: PermissionMode,
+    pub available_models: Vec<ModelInfo>,
+    pub current_model_id: Option<String>,
 }
+
+/// Re-export ModelInfo for use in session
+pub use crate::acp::ModelInfo;
 
 #[derive(Debug, Clone)]
 pub struct OutputLine {
@@ -182,12 +187,39 @@ impl Session {
             current_mode: None,
             active_tool_call_id: None,
             permission_mode: PermissionMode::default(),
+            available_models: vec![],
+            current_model_id: None,
         }
     }
 
     /// Cycle to the next permission mode
     pub fn cycle_permission_mode(&mut self) {
         self.permission_mode = self.permission_mode.next();
+    }
+
+    /// Cycle to the next available model, returns the new model_id if changed
+    pub fn cycle_model(&mut self) -> Option<String> {
+        if self.available_models.is_empty() {
+            return None;
+        }
+
+        let current_idx = self.current_model_id.as_ref()
+            .and_then(|id| self.available_models.iter().position(|m| &m.model_id == id))
+            .unwrap_or(0);
+
+        let next_idx = (current_idx + 1) % self.available_models.len();
+        let next_model_id = self.available_models[next_idx].model_id.clone();
+        self.current_model_id = Some(next_model_id.clone());
+        Some(next_model_id)
+    }
+
+    /// Get display name for current model
+    pub fn current_model_name(&self) -> Option<&str> {
+        self.current_model_id.as_ref().and_then(|id| {
+            self.available_models.iter()
+                .find(|m| &m.model_id == id)
+                .map(|m| m.name.as_str())
+        })
     }
 
     /// Scroll up by n lines
@@ -322,6 +354,8 @@ impl Session {
             current_mode: None,
             active_tool_call_id: None,
             permission_mode: PermissionMode::default(),
+            available_models: vec![],
+            current_model_id: None,
         }
     }
 }

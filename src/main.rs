@@ -103,6 +103,7 @@ enum AgentCommand {
     PromptWithContent { session_id: String, content: Vec<ContentBlock> },
     PermissionResponse { request_id: u64, option_id: Option<PermissionOptionId> },
     CancelPrompt,
+    SetModel { session_id: String, model_id: String },
 }
 
 /// Info for resuming a session
@@ -280,6 +281,21 @@ where
                                             let session_idx = app.sessions.selected_index();
                                             if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
                                                 session.cycle_permission_mode();
+                                            }
+                                        }
+                                        KeyCode::Char('m') => {
+                                            // Cycle model for selected session
+                                            let session_idx = app.sessions.selected_index();
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                if let Some(model_id) = session.cycle_model() {
+                                                    let session_id = session.id.clone();
+                                                    if let Some(cmd_tx) = agent_commands.get(&session_idx) {
+                                                        let _ = cmd_tx.send(AgentCommand::SetModel {
+                                                            session_id,
+                                                            model_id,
+                                                        }).await;
+                                                    }
+                                                }
                                             }
                                         }
                                         // Number keys to select session directly
@@ -724,6 +740,13 @@ async fn spawn_agent_in_dir(
                                 }).await;
                             }
                         }
+                        AgentCommand::SetModel { session_id, model_id } => {
+                            if let Err(e) = conn.set_model(&session_id, &model_id).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Set model failed: {}", e),
+                                }).await;
+                            }
+                        }
                     }
                 }
             }
@@ -826,6 +849,13 @@ async fn spawn_agent_with_resume(
                                 }).await;
                             }
                         }
+                        AgentCommand::SetModel { session_id, model_id } => {
+                            if let Err(e) = conn.set_model(&session_id, &model_id).await {
+                                let _ = event_tx.send(AgentEvent::Error {
+                                    message: format!("Set model failed: {}", e),
+                                }).await;
+                            }
+                        }
                     }
                 }
             }
@@ -924,9 +954,14 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     }
                 }
             }
-            AgentEvent::SessionCreated { session_id } => {
+            AgentEvent::SessionCreated { session_id, models } => {
                 session.id = session_id;
                 session.state = SessionState::Idle;
+                // Store model info if available
+                if let Some(models_state) = models {
+                    session.available_models = models_state.available_models;
+                    session.current_model_id = Some(models_state.current_model_id);
+                }
                 session.add_output("Session ready. Press [i] to type.".to_string(), OutputType::Text);
             }
             AgentEvent::Update { update, .. } => {
