@@ -1624,7 +1624,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             }
                         }
 
-                        // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" into name and description
+                        // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" or "Edit `file.rs`" into name and description
                         let (name, description) = if let Some(paren_pos) = title_str.find('(') {
                             let raw_name = strip_backticks(&title_str[..paren_pos]);
                             let name = clean_tool_name(&raw_name);
@@ -1636,6 +1636,19 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             // Command in backticks like `cd /path && cargo build`
                             let cmd = strip_backticks(&title_str);
                             ("Bash".to_string(), Some(cmd))
+                        } else if let Some(backtick_pos) = title_str.find(" `") {
+                            // Format like "Edit `file.rs`" - tool name followed by backtick-wrapped arg
+                            let raw_name = &title_str[..backtick_pos];
+                            let name = clean_tool_name(raw_name);
+                            let desc = strip_backticks(&title_str[backtick_pos + 1..]);
+                            let mapped_name = match name {
+                                "Terminal" => "Bash",
+                                "Read File" => "Read",
+                                "Write File" => "Write",
+                                "Edit File" => "Edit",
+                                other => other,
+                            };
+                            (mapped_name.to_string(), if desc.is_empty() { None } else { Some(desc) })
                         } else {
                             // Map common tool names and strip any stray backticks
                             let clean_title = strip_backticks(&title_str);
