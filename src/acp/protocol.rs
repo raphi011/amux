@@ -293,10 +293,24 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                 Ok(SessionUpdate::AgentThoughtChunk)
             }
             Some("tool_call") => {
-                // Extract description from rawInput if present (e.g., Task tool's description)
-                let raw_description = value.get("rawInput")
-                    .and_then(|v| v.get("description"))
-                    .and_then(|v| v.as_str())
+                // Extract description from rawInput if present
+                // Priority: description > file_path > command > pattern > query
+                let raw_input = value.get("rawInput");
+                let raw_description = raw_input
+                    .and_then(|v| {
+                        // Try description first (Task tool)
+                        v.get("description").and_then(|d| d.as_str())
+                            // Then file_path (Read/Write/Edit tools)
+                            .or_else(|| v.get("file_path").and_then(|d| d.as_str()))
+                            // Then command (Bash tool)
+                            .or_else(|| v.get("command").and_then(|d| d.as_str()))
+                            // Then pattern (Grep/Glob tools)
+                            .or_else(|| v.get("pattern").and_then(|d| d.as_str()))
+                            // Then query (WebSearch tool)
+                            .or_else(|| v.get("query").and_then(|d| d.as_str()))
+                            // Then url (WebFetch tool)
+                            .or_else(|| v.get("url").and_then(|d| d.as_str()))
+                    })
                     .map(|s| s.to_string());
                 Ok(SessionUpdate::ToolCall {
                     tool_call_id: value.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("").to_string(),

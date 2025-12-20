@@ -540,6 +540,13 @@ where
                                             agent_commands.remove(&idx);
                                             app.kill_selected_session();
                                         }
+                                        KeyCode::Char('c') => {
+                                            // Clear current session output
+                                            let session_idx = app.sessions.selected_index();
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                session.clear();
+                                            }
+                                        }
                                         // TODO: 'r' for resume - waiting for session/load ACP support
                                         // KeyCode::Char('r') => {
                                         //     let sessions = scan_resumable_sessions().await;
@@ -1381,7 +1388,6 @@ enum EventResult {
 }
 
 fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> EventResult {
-    let viewport_height = app.viewport_height;
     if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
         match event {
             AgentEvent::Initialized { agent_info } => {

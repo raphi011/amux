@@ -468,65 +468,6 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(paragraph, area);
 }
-
-/// Wrap a styled Line to fit within width, preserving span styles
-fn wrap_styled_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 {
-        return vec![line.into_iter().map(|s| Span::styled(s.content.to_string(), s.style)).collect()];
-    }
-
-    let mut result: Vec<Line<'static>> = vec![];
-    let mut current_spans: Vec<Span<'static>> = vec![];
-    let mut current_width: usize = 0;
-
-    for span in line.spans {
-        let style = span.style;
-        let content = span.content.to_string();
-
-        for word in content.split_inclusive(' ') {
-            let word_width = word.chars().count();
-
-            if current_width + word_width > width && current_width > 0 {
-                // Start a new line
-                result.push(Line::from(current_spans));
-                current_spans = vec![];
-                current_width = 0;
-            }
-
-            // Handle very long words that need to be split
-            if word_width > width {
-                let mut remaining = word;
-                while !remaining.is_empty() {
-                    let take = remaining.chars().take(width - current_width).collect::<String>();
-                    let take_len = take.chars().count();
-                    current_spans.push(Span::styled(take, style));
-                    current_width += take_len;
-                    remaining = &remaining[remaining.char_indices().nth(take_len).map(|(i, _)| i).unwrap_or(remaining.len())..];
-
-                    if !remaining.is_empty() {
-                        result.push(Line::from(current_spans));
-                        current_spans = vec![];
-                        current_width = 0;
-                    }
-                }
-            } else {
-                current_spans.push(Span::styled(word.to_string(), style));
-                current_width += word_width;
-            }
-        }
-    }
-
-    if !current_spans.is_empty() {
-        result.push(Line::from(current_spans));
-    }
-
-    if result.is_empty() {
-        result.push(Line::default());
-    }
-
-    result
-}
-
 /// Wrap text to fit within width, preserving words where possible
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
@@ -1181,7 +1122,7 @@ fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
 fn render_help_popup(frame: &mut Frame, area: Rect) {
     // Calculate centered popup area
     let popup_width = 50u16;
-    let popup_height = 23u16;
+    let popup_height = 24u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
@@ -1214,6 +1155,10 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  x       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Kill session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  c       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Clear session output", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  j/k     ", Style::new().fg(TEXT_WHITE)),

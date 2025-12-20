@@ -6,7 +6,6 @@ use once_cell::sync::Lazy;
 use chrono::Local;
 
 static LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
-static LOG_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
 
 /// Initialize logging to a file
 pub fn init() -> std::io::Result<PathBuf> {
@@ -27,16 +26,10 @@ pub fn init() -> std::io::Result<PathBuf> {
         .open(&log_path)?;
 
     *LOG_FILE.lock().unwrap() = Some(file);
-    *LOG_PATH.lock().unwrap() = Some(log_path.clone());
 
     log("=== amux started ===");
 
     Ok(log_path)
-}
-
-/// Get the current log file path
-pub fn path() -> Option<PathBuf> {
-    LOG_PATH.lock().unwrap().clone()
 }
 
 /// Log a message with timestamp
@@ -75,9 +68,4 @@ pub fn log_outgoing(line: &str) {
 /// Log an event
 pub fn log_event(event: &str) {
     log(&format!("[EVENT] {}", event));
-}
-
-/// Log an error
-pub fn log_error(error: &str) {
-    log(&format!("[ERROR] {}", error));
 }
