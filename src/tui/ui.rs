@@ -1122,7 +1122,7 @@ fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
 fn render_help_popup(frame: &mut Frame, area: Rect) {
     // Calculate centered popup area
     let popup_width = 50u16;
-    let popup_height = 24u16;
+    let popup_height = 23u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
@@ -1155,10 +1155,6 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  x       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Kill session", Style::new().fg(TEXT_DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  c       ", Style::new().fg(TEXT_WHITE)),
-        Span::styled("Clear session output", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  j/k     ", Style::new().fg(TEXT_WHITE)),

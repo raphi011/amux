@@ -315,17 +315,6 @@ impl Session {
         self.permission_mode = self.permission_mode.next();
     }
 
-    /// Clear the session output and reset state
-    pub fn clear(&mut self) {
-        self.output.clear();
-        self.scroll_offset = 0;
-        self.plan_entries.clear();
-        self.pending_permission = None;
-        self.pending_question = None;
-        self.active_tool_call_id = None;
-        self.saved_input = None;
-    }
-
     /// Cycle to the next available model, returns the new model_id if changed
     pub fn cycle_model(&mut self) -> Option<String> {
         if self.available_models.is_empty() {
