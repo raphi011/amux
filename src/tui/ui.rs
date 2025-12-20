@@ -190,7 +190,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
         ]);
 
-        // Second line: agent name + branch + mode
+        // Second line: agent name + branch + worktree + mode
         let agent_name = session.agent_type.display_name();
         let mut second_spans = vec![
             Span::raw("   "),
@@ -199,6 +199,12 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("🌿 ", Style::new().fg(BRANCH_GREEN)),
             Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
         ];
+
+        // Show worktree indicator
+        if session.is_worktree {
+            second_spans.push(Span::raw("  "));
+            second_spans.push(Span::styled("worktree", Style::new().fg(TEXT_DIM)));
+        }
 
         // Show mode if set (e.g., "plan")
         if let Some(mode) = &session.current_mode {

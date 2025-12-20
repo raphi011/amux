@@ -128,6 +128,7 @@ pub struct Session {
     pub state: SessionState,
     pub cwd: PathBuf,
     pub git_branch: String,
+    pub is_worktree: bool,
     pub tokens_input: u32,
     pub tokens_output: u32,
     pub output: Vec<OutputLine>,
@@ -169,7 +170,7 @@ pub enum OutputType {
 }
 
 impl Session {
-    pub fn new(id: String, name: String, agent_type: AgentType, cwd: PathBuf) -> Self {
+    pub fn new(id: String, name: String, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> Self {
         Self {
             id,
             name,
@@ -177,6 +178,7 @@ impl Session {
             state: SessionState::Spawning,
             cwd,
             git_branch: String::new(),
+            is_worktree,
             tokens_input: 0,
             tokens_output: 0,
             output: vec![],
@@ -354,6 +356,7 @@ impl Session {
             state: SessionState::Idle,
             cwd: PathBuf::from(format!("~/Code/{}", name)),
             git_branch: branch.to_string(),
+            is_worktree: false,
             tokens_input: 0,
             tokens_output: 0,
             output: vec![],

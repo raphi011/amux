@@ -106,11 +106,12 @@ impl FolderPickerState {
 pub struct AgentPickerState {
     pub cwd: PathBuf,
     pub selected: usize,
+    pub is_worktree: bool,
 }
 
 impl AgentPickerState {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd, selected: 0 }
+    pub fn new(cwd: PathBuf, is_worktree: bool) -> Self {
+        Self { cwd, selected: 0, is_worktree }
     }
 
     pub fn agents() -> &'static [AgentType] {
@@ -457,8 +458,8 @@ impl App {
     }
 
     /// Open the agent picker for the given directory
-    pub fn open_agent_picker(&mut self, cwd: PathBuf) {
-        self.agent_picker = Some(AgentPickerState::new(cwd));
+    pub fn open_agent_picker(&mut self, cwd: PathBuf, is_worktree: bool) {
+        self.agent_picker = Some(AgentPickerState::new(cwd, is_worktree));
         self.input_mode = InputMode::AgentPicker;
     }
 
@@ -572,7 +573,7 @@ impl App {
     }
 
     /// Spawn a new session and return its index
-    pub fn spawn_session(&mut self, agent_type: AgentType, cwd: PathBuf) -> usize {
+    pub fn spawn_session(&mut self, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> usize {
         let name = cwd
             .file_name()
             .and_then(|n| n.to_str())
@@ -580,7 +581,7 @@ impl App {
             .to_string();
 
         let id = format!("session_{}", self.sessions.len() + 1);
-        let session = Session::new(id, name, agent_type, cwd);
+        let session = Session::new(id, name, agent_type, cwd, is_worktree);
 
         self.sessions.add_session(session);
         self.sessions.len() - 1

@@ -259,6 +259,8 @@ pub enum SessionUpdate {
         tool_call_id: String,
         title: Option<String>,
         status: Option<String>,
+        /// Description from rawInput (e.g., Task tool's description parameter)
+        raw_description: Option<String>,
     },
     ToolCallUpdate {
         tool_call_id: String,
@@ -291,10 +293,16 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                 Ok(SessionUpdate::AgentThoughtChunk)
             }
             Some("tool_call") => {
+                // Extract description from rawInput if present (e.g., Task tool's description)
+                let raw_description = value.get("rawInput")
+                    .and_then(|v| v.get("description"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 Ok(SessionUpdate::ToolCall {
                     tool_call_id: value.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     title: value.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     status: value.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    raw_description,
                 })
             }
             Some("tool_call_update") => {

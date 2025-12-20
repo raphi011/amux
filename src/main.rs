@@ -501,7 +501,7 @@ where
                                                 } else {
                                                     let path = entry.path.clone();
                                                     app.close_folder_picker();
-                                                    app.open_agent_picker(path);
+                                                    app.open_agent_picker(path, false);
                                                 }
                                             }
                                         }
@@ -538,7 +538,7 @@ where
                                                     // Open existing worktree
                                                     let path = entry.path.clone();
                                                     app.close_worktree_picker();
-                                                    app.open_agent_picker(path);
+                                                    app.open_agent_picker(path, true);
                                                 }
                                             }
                                         }
@@ -637,7 +637,7 @@ where
                                                     Ok(()) => {
                                                         app.close_branch_input();
                                                         // Open agent picker for the new worktree
-                                                        app.open_agent_picker(worktree_path);
+                                                        app.open_agent_picker(worktree_path, true);
                                                     }
                                                     Err(e) => {
                                                         log::log(&format!("Failed to create worktree: {}", e));
@@ -717,8 +717,9 @@ where
                                         if let Some(picker) = &app.agent_picker {
                                             let agent_type = picker.selected_agent();
                                             let cwd = picker.cwd.clone();
+                                            let is_worktree = picker.is_worktree;
                                             app.close_agent_picker();
-                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd).await?;
+                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
                                         }
                                     }
                                     _ => {}
@@ -955,8 +956,9 @@ async fn spawn_agent_in_dir(
     agent_commands: &mut HashMap<usize, mpsc::Sender<AgentCommand>>,
     agent_type: AgentType,
     cwd: std::path::PathBuf,
+    is_worktree: bool,
 ) -> Result<()> {
-    let session_idx = app.spawn_session(agent_type, cwd.clone());
+    let session_idx = app.spawn_session(agent_type, cwd.clone(), is_worktree);
 
     // Detect git branch
     let branch = get_git_branch(&cwd).await;
@@ -1063,7 +1065,9 @@ async fn spawn_agent_with_resume(
 ) -> Result<()> {
     let cwd = resume_info.cwd.clone();
     let session_id = resume_info.session_id.clone();
-    let session_idx = app.spawn_session(agent_type, cwd.clone());
+    // Check if cwd is inside the worktree directory
+    let is_worktree = cwd.starts_with(&app.worktree_config.worktree_dir);
+    let session_idx = app.spawn_session(agent_type, cwd.clone(), is_worktree);
 
     // Detect git branch
     let branch = get_git_branch(&cwd).await;
@@ -1267,7 +1271,7 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     SessionUpdate::AgentThoughtChunk => {
                         // Silently ignore
                     }
-                    SessionUpdate::ToolCall { tool_call_id, title, .. } => {
+                    SessionUpdate::ToolCall { tool_call_id, title, raw_description, .. } => {
                         let title_str = title
                             .filter(|t| t != "undefined" && !t.is_empty())
                             .unwrap_or_else(|| "Tool".to_string());
@@ -1300,6 +1304,10 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             };
                             (mapped_name.to_string(), None)
                         };
+
+                        // Use raw_description if no description was parsed from title
+                        // This helps with tools like Task that send description in rawInput
+                        let description = description.or(raw_description);
 
                         // Only add spacing for new tool calls, not updates
                         let is_new = !session.has_tool_call(&tool_call_id);
