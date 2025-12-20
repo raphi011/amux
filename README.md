@@ -2,6 +2,25 @@
 
 A TUI (Terminal User Interface) application for monitoring and managing multiple Claude Code agent instances.
 
+## Installation
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap raphi011/amux https://github.com/raphi011/amux
+brew install amux
+```
+
+### From source
+
+```bash
+cargo install --git https://github.com/raphi011/amux
+```
+
+### Pre-built binaries
+
+Download pre-built binaries from the [releases page](https://github.com/raphi011/amux/releases).
+
 ## Features
 
 - Spawns agents: Spawns new agents (claude code, gemini cli)
