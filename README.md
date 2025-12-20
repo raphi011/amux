@@ -24,6 +24,25 @@ When you start a new session, amux:
 
 The architecture follows a session manager pattern where each agent runs in its own async task, with all events funneled through a central event loop for UI updates.
 
+## Installation
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap raphi011/amux https://github.com/raphi011/amux
+brew install amux
+```
+
+### From source
+
+```bash
+cargo install --git https://github.com/raphi011/amux
+```
+
+### Pre-built binaries
+
+Download pre-built binaries from the [releases page](https://github.com/raphi011/amux/releases).
+
 ## Features
 
 - **Multi-agent support** - Run Claude Code and Gemini CLI agents simultaneously

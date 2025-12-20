@@ -93,3 +93,45 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/checksums-sha256.txt
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download checksums
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          curl -sL "https://github.com/raphi011/amux/releases/download/v${VERSION}/checksums-sha256.txt" -o checksums.txt
+          cat checksums.txt
+
+      - name: Update formula
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          
+          # Extract SHA256 checksums
+          SHA_DARWIN_ARM64=$(grep "amux-darwin-arm64.tar.gz" checksums.txt | cut -d' ' -f1)
+          SHA_DARWIN_AMD64=$(grep "amux-darwin-amd64.tar.gz" checksums.txt | cut -d' ' -f1)
+          SHA_LINUX_ARM64=$(grep "amux-linux-arm64.tar.gz" checksums.txt | cut -d' ' -f1)
+          SHA_LINUX_AMD64=$(grep "amux-linux-amd64.tar.gz" checksums.txt | cut -d' ' -f1)
+          
+          # Update formula with version and checksums
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/amux.rb
+          sed -i "s/sha256 \".*\" # darwin-arm64/sha256 \"${SHA_DARWIN_ARM64}\" # darwin-arm64/" Formula/amux.rb
+          sed -i "s/sha256 \".*\" # darwin-amd64/sha256 \"${SHA_DARWIN_AMD64}\" # darwin-amd64/" Formula/amux.rb
+          sed -i "s/sha256 \".*\" # linux-arm64/sha256 \"${SHA_LINUX_ARM64}\" # linux-arm64/" Formula/amux.rb
+          sed -i "s/sha256 \".*\" # linux-amd64/sha256 \"${SHA_LINUX_AMD64}\" # linux-amd64/" Formula/amux.rb
+          
+          cat Formula/amux.rb
+
+      - name: Commit and push formula update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/amux.rb
+          git commit -m "Update Homebrew formula to ${GITHUB_REF#refs/tags/}"
+          git push origin HEAD:main
