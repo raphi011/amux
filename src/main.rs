@@ -1770,6 +1770,11 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                 // Add blank line after response for spacing
                 session.add_output(String::new(), OutputType::Text);
             }
+            AgentEvent::FileWritten { path, diff, .. } => {
+                // Show the file path and diff for the edit
+                session.add_output(format!("Wrote: {}", path), OutputType::Text);
+                session.add_tool_output(diff);
+            }
             AgentEvent::Error { message } => {
                 session.state = SessionState::Idle;
                 session.add_output(format!("Error: {}", message), OutputType::Error);
