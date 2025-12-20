@@ -312,6 +312,11 @@ where
                                                     }
                                                     session.pending_permission = None;
                                                     session.state = SessionState::Prompting;
+                                                    // Restore saved input if any
+                                                    if let Some((buffer, cursor)) = session.take_saved_input() {
+                                                        app.input_buffer = buffer;
+                                                        app.cursor_position = cursor;
+                                                    }
                                                 }
                                             }
                                         }
@@ -329,6 +334,11 @@ where
                                                     }
                                                     session.pending_permission = None;
                                                     session.state = SessionState::Idle;
+                                                    // Restore saved input if any
+                                                    if let Some((buffer, cursor)) = session.take_saved_input() {
+                                                        app.input_buffer = buffer;
+                                                        app.cursor_position = cursor;
+                                                    }
                                                 }
                                             }
                                         }
@@ -368,6 +378,11 @@ where
                                                     }
                                                     session.pending_question = None;
                                                     session.state = SessionState::Prompting;
+                                                    // Restore saved input if any
+                                                    if let Some((buffer, cursor)) = session.take_saved_input() {
+                                                        app.input_buffer = buffer;
+                                                        app.cursor_position = cursor;
+                                                    }
                                                 }
                                             }
                                         }
@@ -384,6 +399,11 @@ where
                                                     }
                                                     session.pending_question = None;
                                                     session.state = SessionState::Idle;
+                                                    // Restore saved input if any
+                                                    if let Some((buffer, cursor)) = session.take_saved_input() {
+                                                        app.input_buffer = buffer;
+                                                        app.cursor_position = cursor;
+                                                    }
                                                 }
                                             }
                                         }
@@ -1388,6 +1408,12 @@ enum EventResult {
 }
 
 fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> EventResult {
+    // Get these values before taking mutable borrow of sessions
+    let selected_idx = app.sessions.selected_index();
+    let is_insert_mode = app.input_mode == InputMode::Insert;
+    let input_buffer = app.input_buffer.clone();
+    let cursor_position = app.cursor_position;
+
     if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
         match event {
             AgentEvent::Initialized { agent_info } => {
@@ -1522,6 +1548,11 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     options,
                     selected: 0,
                 });
+
+                // Save input buffer if user was typing in this session
+                if session_idx == selected_idx && is_insert_mode && !input_buffer.is_empty() {
+                    session.save_input(input_buffer.clone(), cursor_position);
+                }
             }
             AgentEvent::AskUserRequest {
                 request_id,
@@ -1538,6 +1569,11 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                     options,
                     multi_select,
                 ));
+
+                // Save input buffer if user was typing in this session
+                if session_idx == selected_idx && is_insert_mode && !input_buffer.is_empty() {
+                    session.save_input(input_buffer.clone(), cursor_position);
+                }
             }
             AgentEvent::PromptComplete { .. } => {
                 session.state = SessionState::Idle;

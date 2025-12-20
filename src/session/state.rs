@@ -241,6 +241,8 @@ pub struct Session {
     pub permission_mode: PermissionMode,
     pub available_models: Vec<ModelInfo>,
     pub current_model_id: Option<String>,
+    /// Saved input buffer when permission/question dialog interrupts typing
+    pub saved_input: Option<(String, usize)>, // (buffer, cursor_position)
 }
 
 /// Re-export ModelInfo for use in session
@@ -292,7 +294,20 @@ impl Session {
             permission_mode: PermissionMode::default(),
             available_models: vec![],
             current_model_id: None,
+            saved_input: None,
         }
+    }
+
+    /// Save the current input buffer (called when permission/question interrupts)
+    pub fn save_input(&mut self, buffer: String, cursor: usize) {
+        if !buffer.is_empty() {
+            self.saved_input = Some((buffer, cursor));
+        }
+    }
+
+    /// Take the saved input buffer (returns and clears it)
+    pub fn take_saved_input(&mut self) -> Option<(String, usize)> {
+        self.saved_input.take()
     }
 
     /// Cycle to the next permission mode
@@ -308,6 +323,7 @@ impl Session {
         self.pending_permission = None;
         self.pending_question = None;
         self.active_tool_call_id = None;
+        self.saved_input = None;
     }
 
     /// Cycle to the next available model, returns the new model_id if changed
@@ -481,6 +497,7 @@ impl Session {
             permission_mode: PermissionMode::default(),
             available_models: vec![],
             current_model_id: None,
+            saved_input: None,
         }
     }
 }
