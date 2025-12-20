@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock, AskUserResponse};
-use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry};
+use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry, CleanupEntry};
 use clipboard::ClipboardContent;
 use session::{AgentType, OutputType, SessionState, PendingPermission, PendingQuestion, PermissionMode};
 
@@ -160,9 +160,10 @@ struct ResumeInfo {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
+    // Initialize logging and panic hook
     if let Ok(log_path) = log::init() {
         log::log(&format!("Log file: {}", log_path.display()));
+        log::install_panic_hook();
     }
 
     // Parse CLI arguments
@@ -560,6 +561,15 @@ where
                                             agent_commands.remove(&idx);
                                             app.kill_selected_session();
                                         }
+                                        KeyCode::Char('c') => {
+                                            // Open worktree cleanup picker
+                                            let start = app.start_dir.clone();
+                                            app.open_folder_picker(start.clone());
+                                            let entries = scan_folder_entries(&start).await;
+                                            app.set_folder_entries(entries);
+                                            // Change mode to indicate we're picking for cleanup
+                                            app.input_mode = InputMode::WorktreeCleanupRepoPicker;
+                                        }
                                         // TODO: 'r' for resume - waiting for session/load ACP support
                                         // KeyCode::Char('r') => {
                                         //     let sessions = scan_resumable_sessions().await;
@@ -901,6 +911,160 @@ where
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
                                         app.close_help();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::WorktreeCleanupRepoPicker => {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('q') => {
+                                        app.close_folder_picker();
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if let Some(picker) = &mut app.folder_picker {
+                                            picker.select_next();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if let Some(picker) = &mut app.folder_picker {
+                                            picker.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Char('l') | KeyCode::Right => {
+                                        // Enter directory
+                                        if app.folder_picker_enter_dir() {
+                                            if let Some(picker) = &app.folder_picker {
+                                                let entries = scan_folder_entries(&picker.current_dir).await;
+                                                app.set_folder_entries(entries);
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                                        // Go up
+                                        if app.folder_picker_go_up() {
+                                            if let Some(picker) = &app.folder_picker {
+                                                let entries = scan_folder_entries(&picker.current_dir).await;
+                                                app.set_folder_entries(entries);
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        // Select git repo and scan for cleanable worktrees
+                                        if let Some(picker) = &app.folder_picker {
+                                            if let Some(entry) = picker.selected_entry() {
+                                                if entry.is_parent {
+                                                    // Go up
+                                                    if app.folder_picker_go_up() {
+                                                        if let Some(picker) = &app.folder_picker {
+                                                            let entries = scan_folder_entries(&picker.current_dir).await;
+                                                            app.set_folder_entries(entries);
+                                                        }
+                                                    }
+                                                } else if entry.git_branch.is_some() {
+                                                    // This is a git repo - scan for worktrees
+                                                    let repo_path = entry.path.clone();
+                                                    app.close_folder_picker();
+
+                                                    match git::list_worktrees(&repo_path).await {
+                                                        Ok(worktrees) => {
+                                                            if worktrees.is_empty() {
+                                                                log::log("No worktrees found for this repository");
+                                                            } else {
+                                                                let entries: Vec<CleanupEntry> = worktrees.into_iter().map(|w| {
+                                                                    CleanupEntry {
+                                                                        path: w.path,
+                                                                        branch: w.branch,
+                                                                        is_clean: w.is_clean,
+                                                                        is_merged: w.is_merged,
+                                                                        selected: false,
+                                                                    }
+                                                                }).collect();
+                                                                app.open_worktree_cleanup(repo_path, entries);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            log::log(&format!("Failed to list worktrees: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::WorktreeCleanup => {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('q') => {
+                                        app.close_worktree_cleanup();
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.select_next();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        // Toggle selection of current entry
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.toggle_selected();
+                                        }
+                                    }
+                                    KeyCode::Char('a') => {
+                                        // Select all cleanable
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.select_all_cleanable();
+                                        }
+                                    }
+                                    KeyCode::Char('n') => {
+                                        // Deselect all
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.deselect_all();
+                                        }
+                                    }
+                                    KeyCode::Char('b') => {
+                                        // Toggle delete branches option
+                                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                                            cleanup.toggle_delete_branches();
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        // Perform cleanup of selected worktrees
+                                        if let Some(cleanup) = &app.worktree_cleanup {
+                                            if cleanup.has_selection() {
+                                                let repo_path = cleanup.repo_path.clone();
+                                                let delete_branches = cleanup.delete_branches;
+                                                let selected: Vec<_> = cleanup.selected_entries()
+                                                    .iter()
+                                                    .map(|e| (e.path.clone(), e.branch.clone()))
+                                                    .collect();
+
+                                                for (worktree_path, branch) in selected {
+                                                    // Remove worktree
+                                                    if let Err(e) = git::remove_worktree(&repo_path, &worktree_path, false).await {
+                                                        log::log(&format!("Failed to remove worktree {}: {}", worktree_path.display(), e));
+                                                        continue;
+                                                    }
+                                                    log::log(&format!("Removed worktree: {}", worktree_path.display()));
+
+                                                    // Delete branch if requested
+                                                    if delete_branches {
+                                                        if let Some(branch_name) = branch {
+                                                            if let Err(e) = git::delete_branch(&repo_path, &branch_name, false).await {
+                                                                log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
+                                                            } else {
+                                                                log::log(&format!("Deleted branch: {}", branch_name));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        app.close_worktree_cleanup();
                                     }
                                     _ => {}
                                 }
@@ -1450,13 +1614,24 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                             s.replace('`', "")
                         }
 
+                        // Helper to clean up MCP tool names like "mcp__acp__Edit" -> "Edit"
+                        fn clean_tool_name(name: &str) -> &str {
+                            // Strip MCP prefixes like "mcp__acp__" or "mcp__xxx__"
+                            if let Some(pos) = name.rfind("__") {
+                                &name[pos + 2..]
+                            } else {
+                                name
+                            }
+                        }
+
                         // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" into name and description
                         let (name, description) = if let Some(paren_pos) = title_str.find('(') {
-                            let name = strip_backticks(&title_str[..paren_pos]);
+                            let raw_name = strip_backticks(&title_str[..paren_pos]);
+                            let name = clean_tool_name(&raw_name);
                             let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
                             // Strip backticks from description
                             let desc = strip_backticks(&desc);
-                            (name, if desc.is_empty() { None } else { Some(desc) })
+                            (name.to_string(), if desc.is_empty() { None } else { Some(desc) })
                         } else if title_str.starts_with('`') && title_str.ends_with('`') {
                             // Command in backticks like `cd /path && cargo build`
                             let cmd = strip_backticks(&title_str);
@@ -1464,7 +1639,8 @@ fn handle_agent_event(app: &mut App, session_idx: usize, event: AgentEvent) -> E
                         } else {
                             // Map common tool names and strip any stray backticks
                             let clean_title = strip_backticks(&title_str);
-                            let mapped_name = match clean_title.as_str() {
+                            let cleaned_name = clean_tool_name(&clean_title);
+                            let mapped_name = match cleaned_name {
                                 "Terminal" => "Bash",
                                 "Read File" => "Read",
                                 "Write File" => "Write",

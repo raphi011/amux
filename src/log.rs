@@ -2,10 +2,37 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::panic;
 use once_cell::sync::Lazy;
 use chrono::Local;
 
 static LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
+
+/// Install a panic hook that logs to the log file
+pub fn install_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // Log to our log file
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic".to_string()
+        };
+
+        let location = if let Some(loc) = panic_info.location() {
+            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "unknown location".to_string()
+        };
+
+        log(&format!("[PANIC] {} at {}", msg, location));
+
+        // Also call the default hook to print to stderr
+        default_hook(panic_info);
+    }));
+}
 
 /// Initialize logging to a file
 pub fn init() -> std::io::Result<PathBuf> {
@@ -45,10 +72,24 @@ pub fn log(msg: &str) {
     }
 }
 
+/// Truncate a string at a char boundary (up to max_bytes)
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the last valid char boundary at or before max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Log incoming ACP message (truncated for readability)
 pub fn log_incoming(line: &str) {
     let display = if line.len() > 500 {
-        format!("{}... ({} bytes total)", &line[..500], line.len())
+        let truncated = truncate_at_char_boundary(line, 500);
+        format!("{}... ({} bytes total)", truncated, line.len())
     } else {
         line.to_string()
     };
@@ -58,7 +99,8 @@ pub fn log_incoming(line: &str) {
 /// Log outgoing ACP message
 pub fn log_outgoing(line: &str) {
     let display = if line.len() > 500 {
-        format!("{}... ({} bytes total)", &line[..500], line.len())
+        let truncated = truncate_at_char_boundary(line, 500);
+        format!("{}... ({} bytes total)", truncated, line.len())
     } else {
         line.to_string()
     };

@@ -215,6 +215,11 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     if first_line.len() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len.saturating_sub(3)])
+        // Find a valid char boundary for truncation
+        let mut end = max_len.saturating_sub(3);
+        while end > 0 && !first_line.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &first_line[..end])
     }
 }
