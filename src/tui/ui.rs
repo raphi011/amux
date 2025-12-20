@@ -79,9 +79,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(content_layout[4])
     };
 
-    // Render folder picker, agent picker, session picker, branch input, or output area
+    // Render folder picker, agent picker, session picker, branch input, worktree picker, or output area
     if app.input_mode == InputMode::FolderPicker || app.input_mode == InputMode::WorktreeFolderPicker {
         render_folder_picker(frame, right_layout[0], app);
+    } else if app.input_mode == InputMode::WorktreePicker {
+        render_worktree_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::BranchInput {
         render_branch_input(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::AgentPicker {
@@ -727,6 +729,51 @@ fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
 
         if picker.entries.is_empty() || (picker.entries.len() == 1 && picker.entries[0].is_parent) {
             lines.push(Line::styled("  (no subdirectories)", Style::new().fg(TEXT_DIM)));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .style(Style::new().fg(TEXT_WHITE));
+
+    frame.render_widget(paragraph, area);
+}
+
+fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines: Vec<Line> = vec![];
+
+    if let Some(picker) = &app.worktree_picker {
+        // Header
+        lines.push(Line::from(vec![
+            Span::styled("Select worktree or create new", Style::new().fg(TEXT_DIM)),
+        ]));
+        lines.push(Line::raw("")); // spacing
+
+        // List entries
+        for (i, entry) in picker.entries.iter().enumerate() {
+            let is_selected = i == picker.selected;
+            let cursor = if is_selected { "> " } else { "  " };
+
+            let (icon, name_style) = if entry.is_create_new {
+                ("", Style::new().fg(LOGO_MINT))
+            } else {
+                ("󰙅 ", Style::new().fg(TEXT_WHITE))
+            };
+
+            let name_style = if is_selected {
+                name_style.bold()
+            } else {
+                name_style
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(cursor),
+                Span::styled(icon, Style::new().fg(if entry.is_create_new { LOGO_MINT } else { LOGO_GOLD })),
+                Span::styled(&entry.name, name_style),
+            ]));
+        }
+
+        if picker.entries.len() == 1 {
+            lines.push(Line::styled("  (no existing worktrees)", Style::new().fg(TEXT_DIM)));
         }
     }
 

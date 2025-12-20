@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock};
-use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig};
+use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry};
 use clipboard::ClipboardContent;
 use session::{AgentType, OutputType, SessionState, PendingPermission, PermissionMode};
 
@@ -91,6 +91,49 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
                 path,
                 git_branch,
                 is_parent: false,
+            });
+        }
+    }
+
+    entries
+}
+
+/// Scan the worktree directory for existing worktrees
+async fn scan_worktrees(worktree_dir: &std::path::Path) -> Vec<WorktreeEntry> {
+    let mut entries = vec![];
+
+    // Always add "Create new worktree" option first
+    entries.push(WorktreeEntry {
+        name: "+ Create new worktree".to_string(),
+        path: std::path::PathBuf::new(),
+        is_create_new: true,
+    });
+
+    // Scan existing worktrees
+    if let Ok(mut read_dir) = tokio::fs::read_dir(worktree_dir).await {
+        let mut worktrees = vec![];
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            if let Ok(file_type) = entry.file_type().await {
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let path = entry.path();
+                    // Only include if it looks like a git worktree (has .git file or directory)
+                    let git_path = path.join(".git");
+                    if git_path.exists() {
+                        worktrees.push((name, path));
+                    }
+                }
+            }
+        }
+
+        // Sort alphabetically
+        worktrees.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        for (name, path) in worktrees {
+            entries.push(WorktreeEntry {
+                name,
+                path,
+                is_create_new: false,
             });
         }
     }
@@ -366,11 +409,10 @@ where
                                             app.set_folder_entries(entries);
                                         }
                                         KeyCode::Char('w') => {
-                                            // Open worktree folder picker
-                                            let start = app.start_dir.clone();
-                                            app.open_worktree_folder_picker(start.clone());
-                                            let entries = scan_folder_entries(&start).await;
-                                            app.set_folder_entries(entries);
+                                            // Open worktree picker (existing worktrees or create new)
+                                            let worktree_dir = app.worktree_config.worktree_dir.clone();
+                                            let entries = scan_worktrees(&worktree_dir).await;
+                                            app.open_worktree_picker(entries);
                                         }
                                         KeyCode::Char('x') => {
                                             let idx = app.sessions.selected_index();
@@ -459,6 +501,43 @@ where
                                                 } else {
                                                     let path = entry.path.clone();
                                                     app.close_folder_picker();
+                                                    app.open_agent_picker(path);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::WorktreePicker => {
+                                match key.code {
+                                    KeyCode::Esc | KeyCode::Char('q') => {
+                                        app.close_worktree_picker();
+                                    }
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if let Some(picker) = &mut app.worktree_picker {
+                                            picker.select_next();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if let Some(picker) = &mut app.worktree_picker {
+                                            picker.select_prev();
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some(picker) = &app.worktree_picker {
+                                            if let Some(entry) = picker.selected_entry() {
+                                                if entry.is_create_new {
+                                                    // Create new worktree - go to folder picker
+                                                    app.close_worktree_picker();
+                                                    let start = app.start_dir.clone();
+                                                    app.open_worktree_folder_picker(start.clone());
+                                                    let entries = scan_folder_entries(&start).await;
+                                                    app.set_folder_entries(entries);
+                                                } else {
+                                                    // Open existing worktree
+                                                    let path = entry.path.clone();
+                                                    app.close_worktree_picker();
                                                     app.open_agent_picker(path);
                                                 }
                                             }

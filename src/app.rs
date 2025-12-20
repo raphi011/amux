@@ -12,6 +12,7 @@ pub enum InputMode {
     AgentPicker,         // Selecting agent type for new session
     SessionPicker,       // Selecting session to resume
     Help,                // Help popup showing all hotkeys
+    WorktreePicker,      // Selecting existing worktree or create new
     WorktreeFolderPicker, // Selecting git repo for worktree
     BranchInput,         // Entering branch name with autocomplete
 }
@@ -128,6 +129,43 @@ impl AgentPickerState {
 
     pub fn selected_agent(&self) -> AgentType {
         Self::agents()[self.selected]
+    }
+}
+
+/// Entry in the worktree picker
+#[derive(Debug, Clone)]
+pub struct WorktreeEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_create_new: bool,
+}
+
+/// State for the worktree picker
+#[derive(Debug, Clone)]
+pub struct WorktreePickerState {
+    pub entries: Vec<WorktreeEntry>,
+    pub selected: usize,
+}
+
+impl WorktreePickerState {
+    pub fn new(entries: Vec<WorktreeEntry>) -> Self {
+        Self { entries, selected: 0 }
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + 1) % self.entries.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = self.selected.checked_sub(1).unwrap_or(self.entries.len() - 1);
+        }
+    }
+
+    pub fn selected_entry(&self) -> Option<&WorktreeEntry> {
+        self.entries.get(self.selected)
     }
 }
 
@@ -250,6 +288,7 @@ pub struct App {
     pub folder_picker: Option<FolderPickerState>,
     pub agent_picker: Option<AgentPickerState>,
     pub session_picker: Option<SessionPickerState>,
+    pub worktree_picker: Option<WorktreePickerState>,
     pub branch_input: Option<BranchInputState>,
     pub spinner_frame: usize,
     pub attachments: Vec<ImageAttachment>,
@@ -269,6 +308,7 @@ impl App {
             folder_picker: None,
             agent_picker: None,
             session_picker: None,
+            worktree_picker: None,
             branch_input: None,
             spinner_frame: 0,
             attachments: Vec::new(),
@@ -437,6 +477,18 @@ impl App {
     /// Close the session picker without selecting
     pub fn close_session_picker(&mut self) {
         self.session_picker = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the worktree picker with existing worktrees
+    pub fn open_worktree_picker(&mut self, entries: Vec<WorktreeEntry>) {
+        self.worktree_picker = Some(WorktreePickerState::new(entries));
+        self.input_mode = InputMode::WorktreePicker;
+    }
+
+    /// Close the worktree picker
+    pub fn close_worktree_picker(&mut self) {
+        self.worktree_picker = None;
         self.input_mode = InputMode::Normal;
     }
 
