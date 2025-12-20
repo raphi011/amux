@@ -15,6 +15,8 @@ pub enum InputMode {
     WorktreePicker,      // Selecting existing worktree or create new
     WorktreeFolderPicker, // Selecting git repo for worktree
     BranchInput,         // Entering branch name with autocomplete
+    WorktreeCleanup,     // Cleaning up merged worktrees
+    WorktreeCleanupRepoPicker, // Selecting git repo for worktree cleanup
 }
 
 /// Entry in the folder picker
@@ -178,6 +180,84 @@ pub struct BranchEntry {
     pub is_remote: bool,
 }
 
+/// Entry in the worktree cleanup picker
+#[derive(Debug, Clone)]
+pub struct CleanupEntry {
+    pub path: std::path::PathBuf,
+    pub branch: Option<String>,
+    pub is_clean: bool,
+    pub is_merged: bool,
+    pub selected: bool,  // Whether this entry is selected for cleanup
+}
+
+/// State for the worktree cleanup picker
+#[derive(Debug, Clone)]
+pub struct WorktreeCleanupState {
+    pub repo_path: std::path::PathBuf,
+    pub entries: Vec<CleanupEntry>,
+    pub cursor: usize,
+    pub delete_branches: bool,  // Whether to also delete branches
+}
+
+impl WorktreeCleanupState {
+    pub fn new(repo_path: std::path::PathBuf, entries: Vec<CleanupEntry>) -> Self {
+        Self {
+            repo_path,
+            entries,
+            cursor: 0,
+            delete_branches: true,
+        }
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.entries.is_empty() {
+            self.cursor = (self.cursor + 1) % self.entries.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.entries.is_empty() {
+            self.cursor = self.cursor.checked_sub(1).unwrap_or(self.entries.len() - 1);
+        }
+    }
+
+    pub fn toggle_selected(&mut self) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.selected = !entry.selected;
+        }
+    }
+
+    pub fn toggle_delete_branches(&mut self) {
+        self.delete_branches = !self.delete_branches;
+    }
+
+    pub fn select_all_cleanable(&mut self) {
+        for entry in &mut self.entries {
+            if entry.is_clean && entry.is_merged {
+                entry.selected = true;
+            }
+        }
+    }
+
+    pub fn deselect_all(&mut self) {
+        for entry in &mut self.entries {
+            entry.selected = false;
+        }
+    }
+
+    pub fn selected_entries(&self) -> Vec<&CleanupEntry> {
+        self.entries.iter().filter(|e| e.selected).collect()
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.entries.iter().any(|e| e.selected)
+    }
+
+    pub fn cleanable_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_clean && e.is_merged).count()
+    }
+}
+
 /// State for branch input with autocomplete
 #[derive(Debug, Clone)]
 pub struct BranchInputState {
@@ -291,6 +371,7 @@ pub struct App {
     pub session_picker: Option<SessionPickerState>,
     pub worktree_picker: Option<WorktreePickerState>,
     pub branch_input: Option<BranchInputState>,
+    pub worktree_cleanup: Option<WorktreeCleanupState>,
     pub spinner_frame: usize,
     pub attachments: Vec<ImageAttachment>,
     pub selected_attachment: Option<usize>,
@@ -311,6 +392,7 @@ impl App {
             session_picker: None,
             worktree_picker: None,
             branch_input: None,
+            worktree_cleanup: None,
             spinner_frame: 0,
             attachments: Vec::new(),
             selected_attachment: None,
@@ -508,6 +590,21 @@ impl App {
     /// Close branch input
     pub fn close_branch_input(&mut self) {
         self.branch_input = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open worktree cleanup picker
+    pub fn open_worktree_cleanup(&mut self, repo_path: PathBuf, entries: Vec<CleanupEntry>) {
+        let mut state = WorktreeCleanupState::new(repo_path, entries);
+        // Pre-select all cleanable entries
+        state.select_all_cleanable();
+        self.worktree_cleanup = Some(state);
+        self.input_mode = InputMode::WorktreeCleanup;
+    }
+
+    /// Close worktree cleanup picker
+    pub fn close_worktree_cleanup(&mut self) {
+        self.worktree_cleanup = None;
         self.input_mode = InputMode::Normal;
     }
 

@@ -138,3 +138,193 @@ pub fn repo_name(repo_path: &Path) -> String {
         .unwrap_or("unknown")
         .to_string()
 }
+
+/// Information about a git worktree
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    pub path: std::path::PathBuf,
+    pub branch: Option<String>,
+    pub is_clean: bool,
+    pub is_merged: bool,
+}
+
+/// List all worktrees for a repository
+pub async fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
+    let output = tokio::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        bail!("Failed to list worktrees");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<std::path::PathBuf> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(path_str) = line.strip_prefix("worktree ") {
+            // Save previous worktree if any
+            if let Some(path) = current_path.take() {
+                worktrees.push((path, current_branch.take()));
+            }
+            current_path = Some(std::path::PathBuf::from(path_str));
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            // Extract branch name from refs/heads/branch-name
+            current_branch = branch_ref
+                .strip_prefix("refs/heads/")
+                .map(|s| s.to_string())
+                .or_else(|| Some(branch_ref.to_string()));
+        }
+    }
+
+    // Don't forget the last worktree
+    if let Some(path) = current_path {
+        worktrees.push((path, current_branch));
+    }
+
+    // Now check each worktree for clean/merged status
+    let mut result = Vec::new();
+    for (path, branch) in worktrees {
+        // Skip the main worktree (the original repo)
+        if path == repo_path {
+            continue;
+        }
+
+        let is_clean = is_worktree_clean(&path).await.unwrap_or(false);
+        let is_merged = if let Some(ref b) = branch {
+            is_branch_merged(repo_path, b).await.unwrap_or(false)
+        } else {
+            false
+        };
+
+        result.push(WorktreeInfo {
+            path,
+            branch,
+            is_clean,
+            is_merged,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Check if a worktree has no uncommitted changes
+pub async fn is_worktree_clean(worktree_path: &Path) -> Result<bool> {
+    let output = tokio::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        bail!("Failed to check worktree status");
+    }
+
+    // If output is empty, the worktree is clean
+    Ok(output.stdout.is_empty())
+}
+
+/// Check if a branch has been merged into main or master
+pub async fn is_branch_merged(repo_path: &Path, branch_name: &str) -> Result<bool> {
+    // First, determine the default branch (main or master)
+    let default_branch = get_default_branch(repo_path).await?;
+
+    // Check if the branch is merged into the default branch
+    let output = tokio::process::Command::new("git")
+        .args(["branch", "--merged", &default_branch])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        bail!("Failed to check merged branches");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let branch = line.trim().trim_start_matches("* ");
+        if branch == branch_name {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Get the default branch (main or master)
+pub async fn get_default_branch(repo_path: &Path) -> Result<String> {
+    // Try to get the default branch from origin
+    let output = tokio::process::Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(branch) = stdout.trim().strip_prefix("refs/remotes/origin/") {
+            return Ok(branch.to_string());
+        }
+    }
+
+    // Fallback: check if main or master exists
+    for branch in &["main", "master"] {
+        let output = tokio::process::Command::new("git")
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(branch.to_string());
+        }
+    }
+
+    bail!("Could not determine default branch")
+}
+
+/// Remove a git worktree
+pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+    let worktree_str = worktree_path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
+
+    let mut args = vec!["worktree", "remove", worktree_str];
+    if force {
+        args.push("--force");
+    }
+
+    let output = tokio::process::Command::new("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to remove worktree: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Delete the branch associated with a worktree
+pub async fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> Result<()> {
+    let flag = if force { "-D" } else { "-d" };
+
+    let output = tokio::process::Command::new("git")
+        .args(["branch", flag, branch_name])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to delete branch: {}", stderr.trim());
+    }
+
+    Ok(())
+}
