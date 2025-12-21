@@ -743,13 +743,17 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             if debug_tool_json {
                                 if let Some(json) = raw_json {
                                     for json_line in json.lines() {
-                                        let wrapped_json = wrap_text(json_line, inner_width.saturating_sub(4));
-                                        for json_text in wrapped_json {
-                                            lines.push(Line::from(vec![
-                                                Span::styled("  │ ", Style::new().fg(TEXT_DIM)),
-                                                Span::styled(json_text, Style::new().fg(TEXT_DIM)),
-                                            ]));
-                                        }
+                                        // Truncate long lines rather than wrap to preserve indentation
+                                        let max_len = inner_width.saturating_sub(4);
+                                        let display_line = if json_line.len() > max_len {
+                                            format!("{}…", &json_line[..max_len.saturating_sub(1)])
+                                        } else {
+                                            json_line.to_string()
+                                        };
+                                        lines.push(Line::from(vec![
+                                            Span::styled("  │ ", Style::new().fg(TEXT_DIM)),
+                                            Span::styled(display_line, Style::new().fg(TEXT_DIM)),
+                                        ]));
                                     }
                                 }
                             }
