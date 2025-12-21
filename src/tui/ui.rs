@@ -161,6 +161,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else if app.input_mode == InputMode::WorktreeCleanup {
         render_worktree_cleanup(frame, right_layout[1], app);
     } else {
+        // Update viewport_height for scroll calculations
+        app.viewport_height = right_layout[1].height as usize;
         render_output_area(frame, right_layout[1], app);
     }
 
@@ -177,7 +179,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render help popup on top if in Help mode
     if app.input_mode == InputMode::Help {
-        render_help_popup(frame, area);
+        render_help_popup(frame, area, app);
     }
 
     // Render bug report popup on top if in BugReport mode
@@ -544,25 +546,15 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
 
-    // Help hint line at bottom of sidebar with sort mode indicator and session ID
+    // Help hint line at bottom of sidebar with sort mode indicator
     let sort_mode_name = app.sort_mode.display_name();
-    let mut hotkey_lines: Vec<Line> = vec![Line::from(vec![
+    let hotkey_lines: Vec<Line> = vec![Line::from(vec![
         Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
         Span::styled(" help  ", Style::new().fg(TEXT_DIM)),
         Span::styled("[v]", Style::new().fg(TEXT_WHITE)),
         Span::styled(" ", Style::new().fg(TEXT_DIM)),
         Span::styled(sort_mode_name, Style::new().fg(LOGO_LIGHT_BLUE)),
     ])];
-
-    // Show session ID for bug reports
-    if let Some(sid) = &app.session_id {
-        hotkey_lines.push(Line::from(vec![
-            Span::styled("[B]", Style::new().fg(TEXT_WHITE)),
-            Span::styled(" bug  ", Style::new().fg(TEXT_DIM)),
-            Span::styled("id:", Style::new().fg(TEXT_DIM)),
-            Span::styled(sid.clone(), Style::new().fg(LOGO_GOLD)),
-        ]));
-    }
 
     // Build plan lines for selected session
     let mut plan_lines: Vec<Line> = vec![];
@@ -624,11 +616,26 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     for _ in 0..padding {
         lines.push(Line::raw(""));
     }
+
+    // Track hotkey line position for click regions
+    let hotkey_line_y = area.y + lines.len() as u16;
+
     lines.extend(hotkey_lines);
     lines.extend(plan_lines);
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
+
+    // Register click regions for sidebar hotkeys
+    // "[?] help  " is 10 chars
+    let help_bounds = ClickRegion::new(area.x, hotkey_line_y, 10, 1);
+    app.interactions
+        .register_click("sidebar_help", help_bounds, Action::OpenHelp);
+
+    // "[v] <sort_mode>" starts at position 10
+    let sort_bounds = ClickRegion::new(area.x + 10, hotkey_line_y, area.width.saturating_sub(10), 1);
+    app.interactions
+        .register_click("sidebar_sort", sort_bounds, Action::CycleSortMode);
 }
 
 pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -739,9 +746,9 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 })
                                 .collect();
                             
-                            // If debug mode is on, render the raw JSON below the tool call
+                            // If debug mode is on, render all raw JSON requests below the tool call
                             if debug_tool_json {
-                                if let Some(json) = raw_json {
+                                for json in raw_json {
                                     for json_line in json.lines() {
                                         // Truncate long lines rather than wrap to preserve indentation
                                         let max_len = inner_width.saturating_sub(4);
@@ -1807,12 +1814,19 @@ pub fn render_session_picker(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &mut App) {
+    use crate::app::ClickRegion;
+    use crate::events::Action;
+    use crate::tui::interaction::InteractiveRegion;
+
     let mut lines: Vec<Line> = vec![];
+    let mut option_count = 0;
 
     if let Some(session) = app.selected_session()
         && let Some(perm) = &session.pending_permission
     {
+        option_count = perm.options.len();
+
         // Header - strip backticks from title
         let title = perm
             .title
@@ -1869,6 +1883,26 @@ pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+
+    // Register click regions for each option
+    // Options start at line 2 (after header line and empty line), accounting for top border
+    let content_y = area.y + 1; // +1 for top border
+    let options_start_y = content_y + 2; // +2 for header and empty line
+
+    for i in 0..option_count {
+        let option_y = options_start_y + i as u16;
+        if option_y < area.y + area.height {
+            let bounds = ClickRegion::new(area.x, option_y, area.width, 1);
+            app.interactions.register(
+                InteractiveRegion::clickable(
+                    "permission_option",
+                    bounds,
+                    Action::SelectPermissionOption(i),
+                )
+                .with_priority(100), // High priority so it captures clicks over other regions
+            );
+        }
+    }
 }
 
 pub fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
@@ -1959,10 +1993,10 @@ pub fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 #[allow(clippy::vec_init_then_push)]
-pub fn render_help_popup(frame: &mut Frame, area: Rect) {
+pub fn render_help_popup(frame: &mut Frame, area: Rect, app: &App) {
     // Calculate centered popup area
     let popup_width = 50u16;
-    let popup_height = 26u16;
+    let popup_height = 28u16; // Increased to fit bug report line
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(
@@ -2042,13 +2076,26 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Span::styled("Cycle model", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  B       ", Style::new().fg(TEXT_WHITE)),
-        Span::styled("Report bug", Style::new().fg(TEXT_DIM)),
-    ]));
-    lines.push(Line::from(vec![
         Span::styled("  q       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Quit", Style::new().fg(TEXT_DIM)),
     ]));
+    lines.push(Line::raw(""));
+
+    // Bug report section with session ID
+    lines.push(Line::styled(
+        "Bug Reports",
+        Style::new().fg(LOGO_CORAL).bold(),
+    ));
+    lines.push(Line::from(vec![
+        Span::styled("  B       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Report bug", Style::new().fg(TEXT_DIM)),
+    ]));
+    if let Some(sid) = &app.session_id {
+        lines.push(Line::from(vec![
+            Span::styled("  Session ", Style::new().fg(TEXT_DIM)),
+            Span::styled(sid.clone(), Style::new().fg(LOGO_GOLD)),
+        ]));
+    }
     lines.push(Line::raw(""));
 
     // Insert mode

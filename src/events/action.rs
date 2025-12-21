@@ -117,6 +117,8 @@ pub enum Action {
     PermissionUp,
     /// Navigate permission options down
     PermissionDown,
+    /// Select permission option by index (for mouse clicks)
+    SelectPermissionOption(usize),
     /// Respond to permission with specific option
     RespondPermission {
         request_id: u64,

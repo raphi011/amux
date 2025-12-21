@@ -190,7 +190,7 @@ impl AgentConnection {
                         if method == "session/update"
                             && let Some(params) = params
                         {
-                            // Log tool_call updates to dedicated tools log
+                            // Log tool calls containing "grep" to dedicated tools log
                             if let Some(update) = params.get("update")
                                 && update.get("sessionUpdate").and_then(|s| s.as_str())
                                     == Some("tool_call")
@@ -199,7 +199,11 @@ impl AgentConnection {
                                     .get("title")
                                     .and_then(|t| t.as_str())
                                     .unwrap_or("unknown");
-                                log::log_tool_json(tool_name, update);
+                                // Check if the entire update JSON contains "grep" (case-insensitive)
+                                let update_str = update.to_string().to_lowercase();
+                                if update_str.contains("grep") {
+                                    log::log_tool_json(tool_name, update);
+                                }
                             }
 
                             match serde_json::from_value::<SessionUpdateParams>(params.clone()) {

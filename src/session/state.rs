@@ -350,8 +350,8 @@ pub enum OutputType {
         tool_call_id: String,
         name: String,
         description: Option<String>,
-        failed: bool,                  // Whether the tool call failed
-        raw_json: Option<String>,      // Raw ACP JSON for debug rendering
+        failed: bool,             // Whether the tool call failed
+        raw_json: Vec<String>,    // Raw ACP JSON requests for debug rendering
     },
     ToolOutput,  // Output from a tool (shown with └ connector)
     DiffAdd,     // Added line in diff (green)
@@ -590,9 +590,9 @@ impl Session {
                 {
                     *existing_name = name;
                 }
-                // Store raw JSON if we got it and don't have one yet
-                if raw_json.is_some() && existing_raw_json.is_none() {
-                    *existing_raw_json = raw_json;
+                // Append raw JSON to the list if provided
+                if let Some(json) = raw_json {
+                    existing_raw_json.push(json);
                 }
                 self.last_activity = Some(Instant::now());
                 return;
@@ -608,7 +608,7 @@ impl Session {
                 name,
                 description,
                 failed: false,
-                raw_json,
+                raw_json: raw_json.into_iter().collect(),
             },
         });
         self.last_activity = Some(Instant::now());

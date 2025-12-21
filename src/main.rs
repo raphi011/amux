@@ -623,6 +623,33 @@ where
                                 app.select_session(idx);
                                 continue;
                             }
+                            Action::SelectPermissionOption(idx) => {
+                                // Select and immediately allow the clicked permission option
+                                if let Some(session) = app.sessions.selected_session_mut()
+                                    && let Some(perm) = &mut session.pending_permission
+                                    && idx < perm.options.len()
+                                {
+                                    perm.selected = idx;
+                                    let option_id = perm.selected_option()
+                                        .map(|o| PermissionOptionId::from(o.option_id.clone()));
+                                    let request_id = perm.request_id;
+                                    let session_id = session.id.clone();
+                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                        let _ = cmd_tx.send(AgentCommand::PermissionResponse {
+                                            request_id,
+                                            option_id,
+                                        }).await;
+                                    }
+                                    session.pending_permission = None;
+                                    session.state = SessionState::Prompting;
+                                    // Restore saved input if any
+                                    if let Some((buffer, cursor)) = session.take_saved_input() {
+                                        app.input_buffer = buffer;
+                                        app.cursor_position = cursor;
+                                    }
+                                }
+                                continue;
+                            }
                             Action::None => {}
                             _ => {
                                 // Other actions not handled by mouse in main loop
@@ -2289,13 +2316,24 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         }
 
                         // Helper to clean up MCP tool names like "mcp__acp__Edit" -> "Edit"
+                        // Also handles titles like "Read /path/to/file" -> "Read"
                         fn clean_tool_name(name: &str) -> &str {
-                            // Strip MCP prefixes like "mcp__acp__" or "mcp__xxx__"
-                            if let Some(pos) = name.rfind("__") {
+                            // First, strip MCP prefixes like "mcp__acp__" or "mcp__xxx__"
+                            let name = if let Some(pos) = name.rfind("__") {
                                 &name[pos + 2..]
                             } else {
                                 name
+                            };
+                            // Then extract just the tool name (first word) if there's a path
+                            // e.g., "Read /Users/foo/bar.rs" -> "Read"
+                            if let Some(space_pos) = name.find(' ') {
+                                let first_word = &name[..space_pos];
+                                // Only use first word if the rest looks like a path
+                                if name[space_pos..].trim().starts_with('/') {
+                                    return first_word;
+                                }
                             }
+                            name
                         }
 
                         // Helper to check if a string is effectively "undefined" or empty

@@ -121,6 +121,7 @@ These features require ACP spec/agent support that doesn't exist yet:
 - **Token usage** - Display input/output tokens per session. ACP doesn't currently expose token counts in session updates.
 - **Session resume** - Resume previous sessions. Requires `session/load` ACP support which is not yet implemented.
 - **Prompt cancellation** - Esc to cancel running prompts. Cancellation is still a draft feature in the ACP spec (see protocol/draft/cancellation) and agents don't honor `$/cancel_request`. Workaround: use `c` to clear/restart the session.
+- **Clarifying questions** - Agent asks follow-up questions during planning or complex tasks. UI support exists (`session/ask_user`) but this is a Claude Code extension not yet implemented by agents.
 
 ## Building
 
