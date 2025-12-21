@@ -105,6 +105,9 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
         // Cycle sort mode
         KeyCode::Char('v') => Action::CycleSortMode,
 
+        // Toggle debug tool JSON display
+        KeyCode::Char('t') => Action::ToggleDebugToolJson,
+
         // Scroll - vim style
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let half_page = app.viewport_height / 2;

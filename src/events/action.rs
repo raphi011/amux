@@ -280,6 +280,10 @@ pub enum Action {
     /// Move cursor to end in bug report
     BugReportInputEnd,
 
+    // === Debug ===
+    /// Toggle debug mode for tool JSON display
+    ToggleDebugToolJson,
+
     // === No-op ===
     /// No action to take
     None,

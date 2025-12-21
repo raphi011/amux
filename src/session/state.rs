@@ -327,6 +327,10 @@ pub struct Session {
     pub current_model_id: Option<String>,
     /// Saved input buffer when permission/question dialog interrupts typing
     pub saved_input: Option<(String, usize)>, // (buffer, cursor_position)
+    /// Per-session prompt input buffer
+    pub input_buffer: String,
+    /// Per-session cursor position in input buffer
+    pub input_cursor: usize,
 }
 
 /// Re-export ModelInfo for use in session
@@ -346,7 +350,8 @@ pub enum OutputType {
         tool_call_id: String,
         name: String,
         description: Option<String>,
-        failed: bool, // Whether the tool call failed
+        failed: bool,                  // Whether the tool call failed
+        raw_json: Option<String>,      // Raw ACP JSON for debug rendering
     },
     ToolOutput,  // Output from a tool (shown with └ connector)
     DiffAdd,     // Added line in diff (green)
@@ -390,6 +395,8 @@ impl Session {
             available_models: vec![],
             current_model_id: None,
             saved_input: None,
+            input_buffer: String::new(),
+            input_cursor: 0,
         }
     }
 
@@ -557,6 +564,7 @@ impl Session {
         tool_call_id: String,
         name: String,
         description: Option<String>,
+        raw_json: Option<String>,
     ) {
         // Check if we already have this tool call - if so, update it
         for line in self.output.iter_mut().rev() {
@@ -564,6 +572,7 @@ impl Session {
                 tool_call_id: existing_id,
                 name: existing_name,
                 description: existing_desc,
+                raw_json: existing_raw_json,
                 ..
             } = &mut line.line_type
                 && existing_id == &tool_call_id
@@ -581,6 +590,10 @@ impl Session {
                 {
                     *existing_name = name;
                 }
+                // Store raw JSON if we got it and don't have one yet
+                if raw_json.is_some() && existing_raw_json.is_none() {
+                    *existing_raw_json = raw_json;
+                }
                 self.last_activity = Some(Instant::now());
                 return;
             }
@@ -595,6 +608,7 @@ impl Session {
                 name,
                 description,
                 failed: false,
+                raw_json,
             },
         });
         self.last_activity = Some(Instant::now());
@@ -705,6 +719,8 @@ impl Session {
             available_models: vec![],
             current_model_id: None,
             saved_input: None,
+            input_buffer: String::new(),
+            input_cursor: 0,
         }
     }
 }

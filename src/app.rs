@@ -276,7 +276,8 @@ pub struct CleanupEntry {
     pub branch: Option<String>,
     pub is_clean: bool,
     pub is_merged: bool,
-    pub selected: bool, // Whether this entry is selected for cleanup
+    pub selected: bool,   // Whether this entry is selected for cleanup
+    pub is_deleting: bool, // Whether this entry is currently being deleted
 }
 
 /// State for the worktree cleanup picker
@@ -580,6 +581,7 @@ pub struct App {
     pub worktree_cleanup: Option<WorktreeCleanupState>,
     pub bug_report: Option<BugReportState>,
     pub spinner_frame: usize,
+    pub spinner_tick: usize,
     pub attachments: Vec<ImageAttachment>,
     pub selected_attachment: Option<usize>,
     pub start_dir: PathBuf,
@@ -596,6 +598,8 @@ pub struct App {
     pub log_path: Option<PathBuf>,
     /// Unique session ID for this amux instance (for matching logs)
     pub session_id: Option<String>,
+    /// Debug mode: show raw ACP JSON under tool calls (toggle with 't')
+    pub debug_tool_json: bool,
 }
 
 impl App {
@@ -614,6 +618,7 @@ impl App {
             worktree_cleanup: None,
             bug_report: None,
             spinner_frame: 0,
+            spinner_tick: 0,
             attachments: Vec::new(),
             selected_attachment: None,
             start_dir,
@@ -624,7 +629,13 @@ impl App {
             sort_mode: SortMode::default(),
             log_path: None,
             session_id: None,
+            debug_tool_json: false,
         }
+    }
+
+    /// Toggle debug mode for tool JSON display
+    pub fn toggle_debug_tool_json(&mut self) {
+        self.debug_tool_json = !self.debug_tool_json;
     }
 
     /// Get the internal session index for a display index (1-9 hotkeys)
@@ -703,9 +714,12 @@ impl App {
         }
     }
 
-    /// Advance spinner animation
+    /// Advance spinner animation (every other tick to slow it down)
     pub fn tick_spinner(&mut self) {
-        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        self.spinner_tick += 1;
+        if self.spinner_tick % 2 == 0 {
+            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        }
     }
 
     /// Get current spinner character
@@ -905,12 +919,41 @@ impl App {
         }
     }
 
+    /// Save current input buffer to the selected session
+    fn save_input_to_session(&mut self) {
+        if let Some(session) = self.sessions.selected_session_mut() {
+            session.input_buffer = std::mem::take(&mut self.input_buffer);
+            session.input_cursor = self.cursor_position;
+            self.cursor_position = 0;
+        }
+    }
+
+    /// Restore input buffer from the selected session
+    fn restore_input_from_session(&mut self) {
+        if let Some(session) = self.sessions.selected_session_mut() {
+            self.input_buffer = std::mem::take(&mut session.input_buffer);
+            self.cursor_position = session.input_cursor;
+            session.input_cursor = 0;
+        }
+    }
+
     pub fn next_session(&mut self) {
+        self.save_input_to_session();
         self.sessions.select_next();
+        self.restore_input_from_session();
     }
 
     pub fn prev_session(&mut self) {
+        self.save_input_to_session();
         self.sessions.select_prev();
+        self.restore_input_from_session();
+    }
+
+    /// Select session by index, saving/restoring input buffers
+    pub fn select_session(&mut self, index: usize) {
+        self.save_input_to_session();
+        self.sessions.select_index(index);
+        self.restore_input_from_session();
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -934,13 +977,21 @@ impl App {
         self.next_session_id += 1;
         let session = Session::new(id.clone(), name, agent_type, cwd, is_worktree);
 
+        // Save current session's input before switching to the new session
+        self.save_input_to_session();
         self.sessions.add_session(session);
+        // New session has empty input, so no need to restore
         id
     }
 
     /// Kill the currently selected session
     pub fn kill_selected_session(&mut self) {
+        // Clear current input (it belongs to the session being killed)
+        self.input_buffer.clear();
+        self.cursor_position = 0;
         self.sessions.remove_selected();
+        // Restore input from the newly selected session
+        self.restore_input_from_session();
     }
 
     /// Enter insert mode

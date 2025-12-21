@@ -267,6 +267,8 @@ pub enum SessionUpdate {
         status: Option<String>,
         /// Description from rawInput (e.g., Task tool's description parameter)
         raw_description: Option<String>,
+        /// Raw JSON of the tool call update (for debug display)
+        raw_json: Option<String>,
     },
     ToolCallUpdate {
         tool_call_id: String,
@@ -321,6 +323,8 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                             .or_else(|| v.get("url").and_then(|d| d.as_str()))
                     })
                     .map(|s| s.to_string());
+                // Store the raw JSON for debug display
+                let raw_json = serde_json::to_string_pretty(&value).ok();
                 Ok(SessionUpdate::ToolCall {
                     tool_call_id: value
                         .get("toolCallId")
@@ -336,6 +340,7 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
                     raw_description,
+                    raw_json,
                 })
             }
             Some("tool_call_update") => Ok(SessionUpdate::ToolCallUpdate {

@@ -570,7 +570,7 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         && !session.plan_entries.is_empty()
     {
         // Separator and header before plan
-        let separator = "─".repeat(area.width.saturating_sub(2) as usize);
+        let separator = "─".repeat(area.width.saturating_sub(1) as usize);
         plan_lines.push(Line::styled(separator, Style::new().fg(TEXT_DIM)));
         plan_lines.push(Line::styled("Tasks", Style::new().fg(TEXT_WHITE).bold()));
         plan_lines.push(Line::raw("")); // Empty line after header
@@ -659,6 +659,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
             // Get active tool call ID and spinner for rendering
             let active_tool_id = session.active_tool_call_id.as_deref();
             let spinner = app.spinner();
+            let debug_tool_json = app.debug_tool_json;
 
             // First expand all output to visual lines
             let all_lines: Vec<Line> = session
@@ -696,6 +697,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             name,
                             description,
                             failed,
+                            raw_json,
                         } => {
                             // Tool call - spinner if active, red dot if failed, green dot if complete
                             let is_active = active_tool_id == Some(tool_call_id.as_str());
@@ -718,7 +720,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             };
                             // Wrap tool call display for narrow windows (indicator is 2 chars)
                             let wrapped = wrap_text(&display, inner_width.saturating_sub(2));
-                            wrapped
+                            let mut lines: Vec<Line> = wrapped
                                 .into_iter()
                                 .enumerate()
                                 .map(|(i, text)| {
@@ -735,7 +737,24 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                         Span::styled(text, Style::new().fg(TEXT_WHITE).bold()),
                                     ])
                                 })
-                                .collect()
+                                .collect();
+                            
+                            // If debug mode is on, render the raw JSON below the tool call
+                            if debug_tool_json {
+                                if let Some(json) = raw_json {
+                                    for json_line in json.lines() {
+                                        let wrapped_json = wrap_text(json_line, inner_width.saturating_sub(4));
+                                        for json_text in wrapped_json {
+                                            lines.push(Line::from(vec![
+                                                Span::styled("  │ ", Style::new().fg(TEXT_DIM)),
+                                                Span::styled(json_text, Style::new().fg(TEXT_DIM)),
+                                            ]));
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            lines
                         }
                         OutputType::ToolOutput => {
                             // Tool output - └ connector, plain text (no markdown)
@@ -1484,55 +1503,78 @@ pub fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
             let is_cursor = i == cleanup.cursor;
             let cursor = if is_cursor { "> " } else { "  " };
 
-            // Checkbox
-            let checkbox = if entry.selected { "[x] " } else { "[ ] " };
+            // Show deleting state or normal state
+            if entry.is_deleting {
+                // Show deleting indicator with spinner
+                let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let spinner = spinner_frames[app.spinner_frame % spinner_frames.len()];
 
-            // Status icons
-            let clean_icon = if entry.is_clean { "󰄬 " } else { "󰅖 " }; // Checkmark or X
-            let clean_color = if entry.is_clean {
-                LOGO_MINT
+                // Branch name or path
+                let display_name = entry.branch.as_deref().unwrap_or_else(|| {
+                    entry
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                });
+
+                lines.push(Line::from(vec![
+                    Span::styled(cursor, Style::new().fg(TEXT_DIM)),
+                    Span::styled(spinner, Style::new().fg(LOGO_GOLD)),
+                    Span::styled(" deleting ", Style::new().fg(LOGO_GOLD)),
+                    Span::styled(display_name, Style::new().fg(TEXT_DIM)),
+                ]));
             } else {
-                LOGO_CORAL
-            };
+                // Checkbox
+                let checkbox = if entry.selected { "[x] " } else { "[ ] " };
 
-            let merged_icon = if entry.is_merged { "󰘬 " } else { "󰜛 " }; // Merged or unmerged
-            let merged_color = if entry.is_merged {
-                LOGO_MINT
-            } else {
-                LOGO_GOLD
-            };
+                // Status icons
+                let clean_icon = if entry.is_clean { "󰄬 " } else { "󰅖 " }; // Checkmark or X
+                let clean_color = if entry.is_clean {
+                    LOGO_MINT
+                } else {
+                    LOGO_CORAL
+                };
 
-            // Branch name or path
-            let display_name = entry.branch.as_deref().unwrap_or_else(|| {
-                entry
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-            });
+                let merged_icon = if entry.is_merged { "󰘬 " } else { "󰜛 " }; // Merged or unmerged
+                let merged_color = if entry.is_merged {
+                    LOGO_MINT
+                } else {
+                    LOGO_GOLD
+                };
 
-            let name_style = if is_cursor {
-                Style::new().fg(TEXT_WHITE).bold()
-            } else if entry.is_clean && entry.is_merged {
-                Style::new().fg(LOGO_MINT)
-            } else {
-                Style::new().fg(TEXT_DIM)
-            };
+                // Branch name or path
+                let display_name = entry.branch.as_deref().unwrap_or_else(|| {
+                    entry
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                });
 
-            lines.push(Line::from(vec![
-                Span::styled(cursor, Style::new().fg(TEXT_WHITE)),
-                Span::styled(
-                    checkbox,
-                    if entry.selected {
-                        Style::new().fg(LOGO_CORAL)
-                    } else {
-                        Style::new().fg(TEXT_DIM)
-                    },
-                ),
-                Span::styled(clean_icon, Style::new().fg(clean_color)),
-                Span::styled(merged_icon, Style::new().fg(merged_color)),
-                Span::styled(display_name, name_style),
-            ]));
+                let name_style = if is_cursor {
+                    Style::new().fg(TEXT_WHITE).bold()
+                } else if entry.is_clean && entry.is_merged {
+                    Style::new().fg(LOGO_MINT)
+                } else {
+                    Style::new().fg(TEXT_DIM)
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(cursor, Style::new().fg(TEXT_WHITE)),
+                    Span::styled(
+                        checkbox,
+                        if entry.selected {
+                            Style::new().fg(LOGO_CORAL)
+                        } else {
+                            Style::new().fg(TEXT_DIM)
+                        },
+                    ),
+                    Span::styled(clean_icon, Style::new().fg(clean_color)),
+                    Span::styled(merged_icon, Style::new().fg(merged_color)),
+                    Span::styled(display_name, name_style),
+                ]));
+            }
         }
 
         if cleanup.entries.is_empty() {

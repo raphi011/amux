@@ -40,6 +40,15 @@ use session::{
     check_all_agents,
 };
 
+/// Internal app events for async operations
+#[derive(Debug)]
+enum AppEvent {
+    /// A worktree deletion completed (path of deleted worktree)
+    WorktreeDeleted(std::path::PathBuf),
+    /// A worktree deletion failed (path, error message)
+    WorktreeDeletionFailed(std::path::PathBuf, String),
+}
+
 /// Get the current git branch for a directory
 async fn get_git_branch(cwd: &std::path::Path) -> String {
     match tokio::process::Command::new("git")
@@ -487,6 +496,9 @@ where
     // Channel for agent events (keyed by session ID for stable routing)
     let (agent_tx, mut agent_rx) = mpsc::channel::<(String, AgentEvent)>(100);
 
+    // Channel for internal app events (worktree deletion, etc.)
+    let (app_event_tx, mut app_event_rx) = mpsc::channel::<AppEvent>(32);
+
     // Channels for sending commands to agents (keyed by session ID)
     let mut agent_commands: HashMap<String, mpsc::Sender<AgentCommand>> = HashMap::new();
 
@@ -608,7 +620,7 @@ where
                                 continue;
                             }
                             Action::SelectSession(idx) => {
-                                app.sessions.select_index(idx);
+                                app.select_session(idx);
                                 continue;
                             }
                             Action::None => {}
@@ -846,7 +858,7 @@ where
                                             let display_idx = (c as usize) - ('1' as usize);
                                             // Convert display index to internal index
                                             if let Some(internal_idx) = app.internal_index_for_display(display_idx) {
-                                                app.sessions.select_index(internal_idx);
+                                                app.select_session(internal_idx);
                                             }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => app.next_session(),
@@ -895,6 +907,10 @@ where
                                         KeyCode::Char('v') => {
                                             // Cycle through sort modes
                                             app.cycle_sort_mode();
+                                        }
+                                        KeyCode::Char('t') => {
+                                            // Toggle debug tool JSON display
+                                            app.toggle_debug_tool_json();
                                         }
 
                                         // Scroll output - vim style
@@ -996,9 +1012,11 @@ where
                                         // Open cleanup for worktrees in the picker
                                         // Re-scan with fetch to get accurate merge status
                                         let worktree_dir = app.worktree_config.worktree_dir.clone();
+                                        log::log(&format!("Worktree cleanup: scanning dir {:?}", worktree_dir));
                                         app.close_worktree_picker();
 
                                         let worktree_entries = scan_worktrees(&worktree_dir, true).await;
+                                        log::log(&format!("Worktree cleanup: found {} entries", worktree_entries.len()));
                                         let entries: Vec<CleanupEntry> = worktree_entries.iter()
                                             .filter(|e| !e.is_create_new)
                                             .map(|e| {
@@ -1011,12 +1029,16 @@ where
                                                     is_clean: e.is_clean,
                                                     is_merged: e.is_merged,
                                                     selected: false,
+                                                    is_deleting: false,
                                                 }
                                             })
                                             .collect();
 
+                                        log::log(&format!("Worktree cleanup: {} cleanup entries after filter", entries.len()));
                                         if !entries.is_empty() {
                                             app.open_worktree_cleanup(worktree_dir, entries);
+                                        } else {
+                                            log::log("Worktree cleanup: no entries to clean up, not opening dialog");
                                         }
                                     }
                                     KeyCode::Enter => {
@@ -1377,6 +1399,7 @@ where
                                                                         is_clean: w.is_clean,
                                                                         is_merged: w.is_merged,
                                                                         selected: false,
+                                                                        is_deleting: false,
                                                                     }
                                                                 }).collect();
                                                                 app.open_worktree_cleanup(repo_path, entries);
@@ -1432,36 +1455,61 @@ where
                                         }
                                     }
                                     KeyCode::Enter => {
-                                        // Perform cleanup of selected worktrees
-                                        if let Some(cleanup) = &app.worktree_cleanup
+                                        // Perform cleanup of selected worktrees asynchronously
+                                        if let Some(cleanup) = &mut app.worktree_cleanup
                                             && cleanup.has_selection() {
-                                                let repo_path = cleanup.repo_path.clone();
                                                 let delete_branches = cleanup.delete_branches;
                                                 let selected: Vec<_> = cleanup.selected_entries()
                                                     .iter()
                                                     .map(|e| (e.path.clone(), e.branch.clone()))
                                                     .collect();
 
-                                                for (worktree_path, branch) in selected {
-                                                    // Remove worktree
-                                                    if let Err(e) = git::remove_worktree(&repo_path, &worktree_path, false).await {
-                                                        log::log(&format!("Failed to remove worktree {}: {}", worktree_path.display(), e));
-                                                        continue;
+                                                // Mark selected entries as deleting
+                                                for entry in &mut cleanup.entries {
+                                                    if entry.selected {
+                                                        entry.is_deleting = true;
                                                     }
-                                                    log::log(&format!("Removed worktree: {}", worktree_path.display()));
+                                                }
 
-                                                    // Delete branch if requested
-                                                    if delete_branches
-                                                        && let Some(branch_name) = branch {
-                                                            if let Err(e) = git::delete_branch(&repo_path, &branch_name, false).await {
-                                                                log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
-                                                            } else {
-                                                                log::log(&format!("Deleted branch: {}", branch_name));
+                                                // Spawn async deletion tasks for each selected worktree
+                                                for (worktree_path, branch) in selected {
+                                                    let tx = app_event_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        // Get the actual git repo for this worktree
+                                                        let Some(parent_repo) = get_worktree_parent_repo(&worktree_path).await else {
+                                                            let _ = tx.send(AppEvent::WorktreeDeletionFailed(
+                                                                worktree_path.clone(),
+                                                                "Failed to find parent repo".to_string(),
+                                                            )).await;
+                                                            return;
+                                                        };
+
+                                                        // Remove worktree
+                                                        if let Err(e) = git::remove_worktree(&parent_repo, &worktree_path, false).await {
+                                                            let _ = tx.send(AppEvent::WorktreeDeletionFailed(
+                                                                worktree_path.clone(),
+                                                                e.to_string(),
+                                                            )).await;
+                                                            return;
+                                                        }
+                                                        log::log(&format!("Removed worktree: {}", worktree_path.display()));
+
+                                                        // Delete branch if requested
+                                                        if delete_branches {
+                                                            if let Some(branch_name) = branch {
+                                                                if let Err(e) = git::delete_branch(&parent_repo, &branch_name, false).await {
+                                                                    log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
+                                                                } else {
+                                                                    log::log(&format!("Deleted branch: {}", branch_name));
+                                                                }
                                                             }
                                                         }
+
+                                                        // Signal success
+                                                        let _ = tx.send(AppEvent::WorktreeDeleted(worktree_path)).await;
+                                                    });
                                                 }
                                             }
-                                        app.close_worktree_cleanup();
                                     }
                                     _ => {}
                                 }
@@ -1773,6 +1821,32 @@ where
                             option_id: Some(option_id),
                         }).await;
                     }
+            }
+
+            // Internal app events (worktree deletion, etc.)
+            Some(event) = app_event_rx.recv() => {
+                match event {
+                    AppEvent::WorktreeDeleted(path) => {
+                        // Remove the deleted entry from the cleanup list
+                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                            cleanup.entries.retain(|e| e.path != path);
+                            // If all entries are deleted, close the cleanup picker
+                            if cleanup.entries.is_empty() {
+                                app.close_worktree_cleanup();
+                            }
+                        }
+                    }
+                    AppEvent::WorktreeDeletionFailed(path, error) => {
+                        log::log(&format!("Failed to delete worktree {}: {}", path.display(), error));
+                        // Mark entry as no longer deleting (so user can retry)
+                        if let Some(cleanup) = &mut app.worktree_cleanup {
+                            if let Some(entry) = cleanup.entries.iter_mut().find(|e| e.path == path) {
+                                entry.is_deleting = false;
+                                entry.selected = false;
+                            }
+                        }
+                    }
+                }
             }
 
             // Timeout to keep UI responsive and tick spinner (16ms = ~60 FPS)
@@ -2206,6 +2280,7 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         tool_call_id,
                         title,
                         raw_description,
+                        raw_json,
                         ..
                     } => {
                         // Helper to strip all backticks from a string
@@ -2345,7 +2420,7 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         if is_new {
                             session.add_output(String::new(), OutputType::Text);
                         }
-                        session.add_tool_call(tool_call_id, name, description);
+                        session.add_tool_call(tool_call_id, name, description, raw_json);
                     }
                     SessionUpdate::ToolCallUpdate {
                         tool_call_id,
