@@ -6,30 +6,34 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
+use std::collections::BTreeMap;
+
 use super::theme::*;
 use crate::acp::{PermissionKind, PlanStatus};
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, SortMode};
 use crate::picker::Picker;
-use crate::session::{PermissionMode, SessionState};
+use crate::session::{PermissionMode, Session, SessionState};
 
 // Layout constants
 const SIDEBAR_WIDTH: u16 = 40;
 const SIDEBAR_LEFT_PADDING: u16 = 2;
 const SEPARATOR_WIDTH: u16 = 1;
-const CONTENT_LEFT_PADDING: u16 = 3;
+const CONTENT_LEFT_PADDING: u16 = 1;
+const CONTENT_RIGHT_PADDING: u16 = 1;
 const SIDEBAR_INNER_PADDING: u16 = 1;
 const BORDER_WIDTH: u16 = 2;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    // Horizontal split: sidebar | left padding | separator | right padding | main content
+    // Horizontal split: sidebar | left padding | separator | content left padding | main content | content right padding
     let content_layout = Layout::horizontal([
         Constraint::Length(SIDEBAR_WIDTH),
         Constraint::Length(SIDEBAR_LEFT_PADDING),
         Constraint::Length(SEPARATOR_WIDTH),
         Constraint::Length(CONTENT_LEFT_PADDING),
         Constraint::Min(0), // Main content
+        Constraint::Length(CONTENT_RIGHT_PADDING),
     ])
     .split(area);
 
@@ -39,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         x: sidebar_outer.x + SIDEBAR_INNER_PADDING,
         y: sidebar_outer.y,
         width: sidebar_outer.width.saturating_sub(BORDER_WIDTH),
-        height: sidebar_outer.height.saturating_sub(SIDEBAR_INNER_PADDING),
+        height: sidebar_outer.height,
     };
 
     // Sidebar: logo + session list (includes hotkeys and plan at bottom)
@@ -80,9 +84,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         } else {
             1
         };
-        // Add 1 for the mode indicator line, plus 1 if there are attachments
+        // Add 1 for the mode indicator line, 1 for padding between prompt and mode, plus 1 if there are attachments
         let attachment_line = if app.has_attachments() { 1 } else { 0 };
-        (wrapped_lines + 1 + attachment_line) as u16
+        (wrapped_lines + 2 + attachment_line) as u16
     };
 
     // Calculate question dialog height
@@ -199,50 +203,53 @@ fn render_logo(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    use crate::app::ClickRegion;
+/// Render a single session entry and return the lines
+fn render_session_entry<'a>(
+    session: &'a Session,
+    index: usize,
+    is_selected: bool,
+    spinner: &str,
+    start_dir: &std::path::Path,
+    show_number: bool,
+) -> Vec<Line<'a>> {
     use crate::session::AgentType;
 
-    let mut session_lines: Vec<Line> = vec![];
-    let mut session_click_areas: Vec<(usize, ClickRegion)> = vec![];
+    let cursor = if is_selected { "> " } else { "  " };
 
-    for (i, session) in app.sessions.sessions().iter().enumerate() {
-        let is_selected = i == app.sessions.selected_index();
-        let cursor = if is_selected { "> " } else { "  " };
+    // Agent type color for second line
+    let agent_color = match session.agent_type {
+        AgentType::ClaudeCode => LOGO_CORAL,
+        AgentType::GeminiCli => LOGO_LIGHT_BLUE,
+    };
 
-        // Agent type color for second line
-        let agent_color = match session.agent_type {
-            AgentType::ClaudeCode => LOGO_CORAL,
-            AgentType::GeminiCli => LOGO_LIGHT_BLUE,
-        };
+    // Activity indicator for working sessions
+    let activity = if session.pending_permission.is_some() {
+        " ⚠".to_string() // Permission required
+    } else if session.pending_question.is_some() {
+        " ?".to_string() // Question pending
+    } else if session.state.is_active() {
+        format!(" {}", spinner) // Animated spinner
+    } else {
+        String::new()
+    };
 
-        // Activity indicator for working sessions
-        let activity = if session.pending_permission.is_some() {
-            " ⚠".to_string() // Permission required
-        } else if session.pending_question.is_some() {
-            " ?".to_string() // Question pending
-        } else if session.state.is_active() {
-            format!(" {}", app.spinner()) // Animated spinner
+    // Compute relative path from start_dir, or use session name as fallback
+    let display_path = if let Ok(rel) = session.cwd.strip_prefix(start_dir) {
+        if rel.as_os_str().is_empty() {
+            ".".to_string()
         } else {
-            String::new()
-        };
+            format!("./{}", rel.display())
+        }
+    } else {
+        // Fallback to just the session name if not under start_dir
+        session.name.clone()
+    };
 
-        // Compute relative path from start_dir, or use session name as fallback
-        let display_path = if let Ok(rel) = session.cwd.strip_prefix(&app.start_dir) {
-            if rel.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                format!("./{}", rel.display())
-            }
-        } else {
-            // Fallback to just the session name if not under start_dir
-            session.name.clone()
-        };
-
-        // First line: cursor + number + relative path + activity
-        let first_line = Line::from(vec![
+    // First line: cursor + optional number + relative path + activity
+    let first_line = if show_number {
+        Line::from(vec![
             Span::raw(cursor),
-            Span::styled(format!("{}. ", i + 1), Style::new().fg(TEXT_DIM)),
+            Span::styled(format!("{}. ", index + 1), Style::new().fg(TEXT_DIM)),
             Span::styled(
                 display_path,
                 if is_selected {
@@ -252,41 +259,195 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 },
             ),
             Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
-        ]);
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw(cursor),
+            Span::styled(
+                display_path,
+                if is_selected {
+                    Style::new().fg(TEXT_WHITE).bold()
+                } else {
+                    Style::new().fg(TEXT_WHITE)
+                },
+            ),
+            Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
+        ])
+    };
 
-        // Second line: agent name + branch + worktree + mode
-        let agent_name = session.agent_type.display_name();
-        let mut second_spans = vec![
-            Span::raw("   "),
-            Span::styled(agent_name, Style::new().fg(agent_color)),
-            Span::raw("  "),
-            Span::styled("🌿 ", Style::new().fg(BRANCH_GREEN)),
-            Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
-        ];
+    // Second line: agent name + branch + worktree + mode
+    let agent_name = session.agent_type.display_name();
+    let mut second_spans = vec![
+        Span::raw("   "),
+        Span::styled(agent_name.to_string(), Style::new().fg(agent_color)),
+        Span::raw("  "),
+        Span::styled("🌿 ", Style::new().fg(BRANCH_GREEN)),
+        Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
+    ];
 
-        // Show worktree indicator (compact)
-        if session.is_worktree {
-            second_spans.push(Span::styled(" (wt)", Style::new().fg(TEXT_DIM)));
+    // Show worktree indicator (compact)
+    if session.is_worktree {
+        second_spans.push(Span::styled(" (wt)", Style::new().fg(TEXT_DIM)));
+    }
+
+    // Show mode if set (e.g., "plan")
+    if let Some(mode) = &session.current_mode {
+        second_spans.push(Span::raw("  "));
+        second_spans.push(Span::styled(
+            format!("[{}]", mode),
+            Style::new().fg(LOGO_GOLD),
+        ));
+    }
+
+    let second_line = Line::from(second_spans);
+
+    vec![first_line, second_line, Line::raw("")] // Include spacing
+}
+
+/// Extract a display name from a git origin URL
+fn origin_display_name(origin: &str) -> String {
+    // origin is already normalized (e.g., "github.com/user/repo")
+    // Extract just the repo name (last component)
+    origin
+        .rsplit('/')
+        .next()
+        .unwrap_or(origin)
+        .to_string()
+}
+
+pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    use crate::app::ClickRegion;
+
+    // Start with empty line for padding after logo
+    let mut session_lines: Vec<Line> = vec![Line::raw("")];
+    let mut session_click_areas: Vec<(usize, ClickRegion)> = vec![];
+
+    let spinner = app.spinner();
+    let start_dir = app.start_dir.clone();
+    let selected_index = app.sessions.selected_index();
+
+    // Build a sorted list of (original_index, session) pairs based on sort mode
+    let sessions = app.sessions.sessions();
+    let mut sorted_indices: Vec<usize> = (0..sessions.len()).collect();
+
+    match app.sort_mode {
+        SortMode::List => {
+            // Keep original order (no sorting needed)
+        }
+        SortMode::Grouped => {
+            // Sort by git origin/folder name for grouping
+            sorted_indices.sort_by(|&a, &b| {
+                let key_a = sessions[a].git_origin.clone().unwrap_or_else(|| {
+                    sessions[a]
+                        .cwd
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                });
+                let key_b = sessions[b].git_origin.clone().unwrap_or_else(|| {
+                    sessions[b]
+                        .cwd
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                });
+                key_a.cmp(&key_b)
+            });
+        }
+        SortMode::ByName => {
+            // Sort alphabetically by session name
+            sorted_indices.sort_by(|&a, &b| sessions[a].name.cmp(&sessions[b].name));
+        }
+        SortMode::ByCreatedTime => {
+            // Sort by creation time (oldest first)
+            sorted_indices.sort_by(|&a, &b| sessions[a].created_at.cmp(&sessions[b].created_at));
+        }
+        SortMode::Priority => {
+            // Priority: permission prompts first, questions next, idle next, running last
+            sorted_indices.sort_by(|&a, &b| {
+                let priority = |s: &Session| -> u8 {
+                    if s.pending_permission.is_some() {
+                        0 // Highest priority
+                    } else if s.pending_question.is_some() {
+                        1
+                    } else if s.state == SessionState::Idle {
+                        2
+                    } else {
+                        3 // Running sessions last
+                    }
+                };
+                priority(&sessions[a]).cmp(&priority(&sessions[b]))
+            });
+        }
+    }
+
+    // For grouped mode, render with group headers
+    if app.sort_mode == SortMode::Grouped {
+        // Group sessions by git origin, falling back to folder name
+        let mut groups: BTreeMap<String, Vec<(usize, usize, &Session)>> = BTreeMap::new();
+
+        for (display_idx, &original_idx) in sorted_indices.iter().enumerate() {
+            let session = &sessions[original_idx];
+            let key = session.git_origin.clone().unwrap_or_else(|| {
+                session
+                    .cwd
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+            groups
+                .entry(key)
+                .or_default()
+                .push((display_idx, original_idx, session));
         }
 
-        // Show mode if set (e.g., "plan")
-        if let Some(mode) = &session.current_mode {
-            second_spans.push(Span::raw("  "));
-            second_spans.push(Span::styled(
-                format!("[{}]", mode),
-                Style::new().fg(LOGO_GOLD),
-            ));
+        for (origin, group_sessions) in &groups {
+            // Group header - extract display name from origin or use folder name directly
+            let display_name = origin_display_name(origin);
+
+            session_lines.push(Line::from(vec![
+                Span::styled("● ", Style::new().fg(LOGO_GOLD)),
+                Span::styled(display_name, Style::new().fg(TEXT_WHITE).bold()),
+                Span::styled(
+                    format!(" ({})", group_sessions.len()),
+                    Style::new().fg(TEXT_DIM),
+                ),
+            ]));
+
+            // Sessions in this group
+            for &(display_idx, original_idx, session) in group_sessions {
+                let is_selected = original_idx == selected_index;
+                let line_y = area.y + session_lines.len() as u16;
+
+                // Use display_idx for the number shown to user
+                let entry_lines =
+                    render_session_entry(session, display_idx, is_selected, spinner, &start_dir, true);
+
+                // Track click region with original_idx for selection
+                session_click_areas.push((original_idx, ClickRegion::new(area.x, line_y, area.width, 3)));
+
+                session_lines.extend(entry_lines);
+            }
         }
+    } else {
+        // Non-grouped modes: render flat list with sorted order
+        for (display_idx, &original_idx) in sorted_indices.iter().enumerate() {
+            let session = &sessions[original_idx];
+            let is_selected = original_idx == selected_index;
+            let line_y = area.y + session_lines.len() as u16;
 
-        let second_line = Line::from(second_spans);
+            // Use display_idx for the number shown to user
+            let entry_lines =
+                render_session_entry(session, display_idx, is_selected, spinner, &start_dir, true);
 
-        // Track click region for this session (3 lines per session)
-        let line_y = area.y + session_lines.len() as u16;
-        session_click_areas.push((i, ClickRegion::new(area.x, line_y, area.width, 3)));
+            // Track click region with original_idx for selection
+            session_click_areas.push((original_idx, ClickRegion::new(area.x, line_y, area.width, 3)));
 
-        session_lines.push(first_line);
-        session_lines.push(second_line);
-        session_lines.push(Line::raw("")); // Spacing
+            session_lines.extend(entry_lines);
+        }
     }
 
     // Update click areas for sessions
@@ -300,10 +461,14 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
 
-    // Help hint line at bottom of sidebar
+    // Help hint line at bottom of sidebar with sort mode indicator
+    let sort_mode_name = app.sort_mode.display_name();
     let hotkey_lines: Vec<Line> = vec![Line::from(vec![
         Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
-        Span::styled(" help", Style::new().fg(TEXT_DIM)),
+        Span::styled(" help  ", Style::new().fg(TEXT_DIM)),
+        Span::styled("[v]", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" ", Style::new().fg(TEXT_DIM)),
+        Span::styled(sort_mode_name, Style::new().fg(LOGO_LIGHT_BLUE)),
     ])];
 
     // Build plan lines for selected session
@@ -769,8 +934,11 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // Track where the mode line starts for click regions
-    let mode_line_y = area.y + attachment_line_count as u16 + input_line_count as u16;
+    // Add empty line between prompt and mode indicator
+    lines.push(Line::raw(""));
+
+    // Track where the mode line starts for click regions (add 1 for the empty line)
+    let mode_line_y = area.y + attachment_line_count as u16 + input_line_count as u16 + 1;
 
     // Calculate permission mode text and model info for click region sizing
     // We need to extract these values before building the mode_line to avoid borrow conflicts
@@ -1612,7 +1780,7 @@ pub fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
 pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     // Calculate centered popup area
     let popup_width = 50u16;
-    let popup_height = 24u16;
+    let popup_height = 25u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(
@@ -1658,6 +1826,10 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  d       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Duplicate session", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  v       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Cycle sort mode", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  j/k     ", Style::new().fg(TEXT_WHITE)),

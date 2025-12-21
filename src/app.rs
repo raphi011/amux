@@ -3,6 +3,46 @@ use std::path::PathBuf;
 use crate::picker::Picker;
 use crate::session::{AgentType, Session, SessionManager};
 
+/// Sort/view mode for the session list
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SortMode {
+    /// Flat list in creation order
+    #[default]
+    List,
+    /// Sessions grouped by git origin
+    Grouped,
+    /// Sorted alphabetically by name
+    ByName,
+    /// Sorted by creation time (oldest first)
+    ByCreatedTime,
+    /// Priority mode: permission prompts first, idle next, running last
+    Priority,
+}
+
+impl SortMode {
+    /// Cycle to the next sort mode
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::List => SortMode::Grouped,
+            SortMode::Grouped => SortMode::ByName,
+            SortMode::ByName => SortMode::ByCreatedTime,
+            SortMode::ByCreatedTime => SortMode::Priority,
+            SortMode::Priority => SortMode::List,
+        }
+    }
+
+    /// Short display name for the mode
+    pub fn display_name(self) -> &'static str {
+        match self {
+            SortMode::List => "list",
+            SortMode::Grouped => "grouped",
+            SortMode::ByName => "by name",
+            SortMode::ByCreatedTime => "by time",
+            SortMode::Priority => "priority",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
     Normal,                    // Navigation mode
@@ -467,6 +507,8 @@ pub struct App {
     pub click_areas: ClickAreas,
     /// Counter for generating unique session IDs
     next_session_id: u64,
+    /// Session list sort/view mode
+    pub sort_mode: SortMode,
 }
 
 impl App {
@@ -490,7 +532,13 @@ impl App {
             worktree_config,
             click_areas: ClickAreas::default(),
             next_session_id: 1,
+            sort_mode: SortMode::default(),
         }
+    }
+
+    /// Cycle through sort modes
+    pub fn cycle_sort_mode(&mut self) {
+        self.sort_mode = self.sort_mode.next();
     }
 
     /// Add an image attachment

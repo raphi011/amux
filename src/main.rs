@@ -816,7 +816,10 @@ where
                                                 spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
                                             }
                                         }
-
+                                        KeyCode::Char('v') => {
+                                            // Cycle through sort modes
+                                            app.cycle_sort_mode();
+                                        }
 
                                         // Scroll output - vim style
                                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1577,10 +1580,12 @@ async fn spawn_agent_in_dir(
 ) -> Result<()> {
     let session_id = app.spawn_session(agent_type, cwd.clone(), is_worktree);
 
-    // Detect git branch
+    // Detect git branch and origin
     let branch = get_git_branch(&cwd).await;
+    let origin = git::get_origin_url(&cwd).await;
     if let Some(session) = app.sessions.get_by_id_mut(&session_id) {
         session.git_branch = branch;
+        session.git_origin = origin;
     }
 
     // Channel for commands to this agent

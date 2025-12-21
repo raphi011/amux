@@ -1,6 +1,6 @@
 use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use serde::Deserialize;
 
@@ -304,6 +304,7 @@ pub struct Session {
     pub state: SessionState,
     pub cwd: PathBuf,
     pub git_branch: String,
+    pub git_origin: Option<String>,
     pub is_worktree: bool,
     #[allow(dead_code)] // TODO: Display token usage in UI
     pub tokens_input: u32,
@@ -311,6 +312,8 @@ pub struct Session {
     pub tokens_output: u32,
     pub output: Vec<OutputLine>,
     pub last_activity: Option<Instant>,
+    /// When this session was created
+    pub created_at: SystemTime,
     pub scroll_offset: usize,
     /// Total rendered lines after text wrapping (updated during render)
     pub total_rendered_lines: usize,
@@ -369,11 +372,13 @@ impl Session {
             state: SessionState::Spawning,
             cwd,
             git_branch: String::new(),
+            git_origin: None,
             is_worktree,
             tokens_input: 0,
             tokens_output: 0,
             output: vec![],
             last_activity: Some(Instant::now()),
+            created_at: SystemTime::now(),
             scroll_offset: usize::MAX,
             total_rendered_lines: 0,
             pending_permission: None,
@@ -659,11 +664,13 @@ impl Session {
             state: SessionState::Idle,
             cwd: PathBuf::from(format!("~/Code/{}", name)),
             git_branch: branch.to_string(),
+            git_origin: None,
             is_worktree: false,
             tokens_input: 0,
             tokens_output: 0,
             output: vec![],
             last_activity: None,
+            created_at: SystemTime::now(),
             scroll_offset: usize::MAX,
             total_rendered_lines: 0,
             pending_permission: None,

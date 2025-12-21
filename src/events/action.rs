@@ -223,6 +223,10 @@ pub enum Action {
     /// Cycle permission mode (normal -> plan -> accept all)
     CyclePermissionMode,
 
+    // === Sort mode ===
+    /// Cycle sort mode (list -> grouped -> by name -> by time -> priority)
+    CycleSortMode,
+
     // === Model selection ===
     /// Cycle to next model
     CycleModel,

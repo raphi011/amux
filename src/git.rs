@@ -2,6 +2,54 @@ use crate::app::BranchEntry;
 use anyhow::{Result, bail};
 use std::path::Path;
 
+/// Get the git remote origin URL for a repository, normalized for grouping
+pub async fn get_origin_url(repo_path: &Path) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(repo_path)
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+
+    // Normalize the URL for grouping (extract repo identifier)
+    Some(normalize_git_url(&url))
+}
+
+/// Normalize a git URL to a consistent format for grouping
+/// Handles SSH (git@github.com:user/repo.git) and HTTPS (https://github.com/user/repo.git)
+fn normalize_git_url(url: &str) -> String {
+    let url = url.trim();
+
+    // Remove .git suffix
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    // Handle SSH format: git@github.com:user/repo -> github.com/user/repo
+    if let Some(rest) = url.strip_prefix("git@") {
+        return rest.replace(':', "/");
+    }
+
+    // Handle HTTPS format: https://github.com/user/repo -> github.com/user/repo
+    if let Some(rest) = url.strip_prefix("https://") {
+        return rest.to_string();
+    }
+
+    if let Some(rest) = url.strip_prefix("http://") {
+        return rest.to_string();
+    }
+
+    // Return as-is if format is unknown
+    url.to_string()
+}
+
 /// List all branches (local and remote) for a git repository
 pub async fn list_branches(repo_path: &Path) -> Result<Vec<BranchEntry>> {
     // Get local branches

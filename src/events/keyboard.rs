@@ -102,6 +102,9 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
             Action::DuplicateSession
         }
 
+        // Cycle sort mode
+        KeyCode::Char('v') => Action::CycleSortMode,
+
         // Scroll - vim style
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let half_page = app.viewport_height / 2;
