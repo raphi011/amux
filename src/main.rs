@@ -2306,159 +2306,25 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                     SessionUpdate::ToolCall {
                         tool_call_id,
                         title,
-                        raw_description,
                         raw_json,
                         ..
                     } => {
-                        // Helper to strip all backticks from a string
-                        fn strip_backticks(s: &str) -> String {
-                            s.replace('`', "")
-                        }
-
-                        // Helper to clean up MCP tool names like "mcp__acp__Edit" -> "Edit"
-                        // Also handles titles like "Read /path/to/file" -> "Read"
-                        fn clean_tool_name(name: &str) -> &str {
-                            // First, strip MCP prefixes like "mcp__acp__" or "mcp__xxx__"
-                            let name = if let Some(pos) = name.rfind("__") {
-                                &name[pos + 2..]
-                            } else {
-                                name
-                            };
-                            // Then extract just the tool name (first word) if there's a path
-                            // e.g., "Read /Users/foo/bar.rs" -> "Read"
-                            if let Some(space_pos) = name.find(' ') {
-                                let first_word = &name[..space_pos];
-                                // Only use first word if the rest looks like a path
-                                if name[space_pos..].trim().starts_with('/') {
-                                    return first_word;
-                                }
-                            }
-                            name
-                        }
-
-                        // Helper to check if a string is effectively "undefined" or empty
-                        fn is_undefined_or_empty(s: &str) -> bool {
-                            let trimmed = s.trim();
-                            trimmed.is_empty() || trimmed == "undefined" || trimmed == "null"
-                        }
-
-                        // Filter out undefined/empty titles
-                        let title_str = title
-                            .filter(|t| !is_undefined_or_empty(t))
+                        // Use title directly, falling back to "Tool" if empty/undefined
+                        let name = title
+                            .filter(|t| {
+                                let trimmed = t.trim();
+                                !trimmed.is_empty()
+                                    && trimmed != "undefined"
+                                    && trimmed != "null"
+                            })
                             .unwrap_or_else(|| "Tool".to_string());
-
-                        // Helper to clean description by removing "undefined" segments
-                        fn clean_description(desc: &str) -> Option<String> {
-                            // Split by common separators and filter out undefined parts
-                            let parts: Vec<&str> = desc
-                                .split(&[',', ':'][..])
-                                .map(|p| p.trim())
-                                .filter(|p| !is_undefined_or_empty(p) && !p.contains("undefined"))
-                                .collect();
-                            if parts.is_empty() {
-                                None
-                            } else {
-                                Some(parts.join(", "))
-                            }
-                        }
-
-                        // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" or "Edit `file.rs`" into name and description
-                        let (name, description) = if let Some(paren_pos) = title_str.find('(') {
-                            let raw_name =
-                                strip_backticks(&title_str[..paren_pos]).trim().to_string();
-                            // Check if the name part is undefined/empty
-                            if is_undefined_or_empty(&raw_name) {
-                                ("Tool".to_string(), None)
-                            } else {
-                                let name = clean_tool_name(&raw_name);
-                                let desc =
-                                    title_str[paren_pos + 1..].trim_end_matches(')').to_string();
-                                // Strip backticks and check for undefined in description
-                                let desc = strip_backticks(&desc);
-                                let desc = clean_description(&desc);
-                                // Map common tool names
-                                let mapped_name = match name {
-                                    "Terminal" => "Bash",
-                                    "Read File" => "Read",
-                                    "Write File" => "Write",
-                                    "Edit File" => "Edit",
-                                    "grep" => "Grep",
-                                    "glob" => "Glob",
-                                    other => other,
-                                };
-                                (mapped_name.to_string(), desc)
-                            }
-                        } else if title_str.starts_with('`') && title_str.ends_with('`') {
-                            // Command in backticks like `cd /path && cargo build`
-                            let cmd = strip_backticks(&title_str);
-                            (
-                                "Bash".to_string(),
-                                if is_undefined_or_empty(&cmd) {
-                                    None
-                                } else {
-                                    Some(cmd)
-                                },
-                            )
-                        } else if let Some(backtick_pos) = title_str.find(" `") {
-                            // Format like "Edit `file.rs`" - tool name followed by backtick-wrapped arg
-                            let raw_name = &title_str[..backtick_pos];
-                            let name = clean_tool_name(raw_name);
-                            let desc = strip_backticks(&title_str[backtick_pos + 1..]);
-                            let mapped_name = match name {
-                                "Terminal" => "Bash",
-                                "Read File" => "Read",
-                                "Write File" => "Write",
-                                "Edit File" => "Edit",
-                                "grep" => "Grep",
-                                "glob" => "Glob",
-                                other => other,
-                            };
-                            (
-                                mapped_name.to_string(),
-                                if is_undefined_or_empty(&desc) {
-                                    None
-                                } else {
-                                    Some(desc)
-                                },
-                            )
-                        } else {
-                            // Map common tool names and strip any stray backticks
-                            let clean_title = strip_backticks(&title_str);
-                            let cleaned_name = clean_tool_name(&clean_title);
-                            let mapped_name = match cleaned_name {
-                                "Terminal" => "Bash",
-                                "Read File" => "Read",
-                                "Write File" => "Write",
-                                "Edit File" => "Edit",
-                                "grep" => "Grep",
-                                "glob" => "Glob",
-                                other => other,
-                            };
-                            (mapped_name.to_string(), None)
-                        };
-
-                        // Use raw_description if no description was parsed from title
-                        // This helps with tools like Task that send description in rawInput
-                        // Also filter out undefined values from raw_description
-                        let raw_description = raw_description.filter(|d| !is_undefined_or_empty(d));
-
-                        // For Read/Grep/Glob tools, prefer raw_description (file_path/pattern) over parsed description
-                        // because the title often contains "undefined" or just line numbers
-                        let description = match name.as_str() {
-                            "Read" | "Grep" | "Glob" => raw_description.or(description),
-                            _ => description.or(raw_description),
-                        };
-
-                        // Final safety filter: remove any description containing "undefined"
-                        let description = description
-                            .filter(|d| !d.contains("undefined") && !d.trim().is_empty());
 
                         // Only add spacing for new tool calls, not updates
                         let is_new = !session.has_tool_call(&tool_call_id);
                         if is_new {
                             session.add_output(String::new(), OutputType::Text);
                         }
-                        session.add_tool_call(tool_call_id, name, description, raw_json);
+                        session.add_tool_call(tool_call_id, name, None, raw_json);
                     }
                     SessionUpdate::ToolCallUpdate {
                         tool_call_id,

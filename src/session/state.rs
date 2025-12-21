@@ -581,13 +581,8 @@ impl Session {
                 if description.is_some() && existing_desc.is_none() {
                     *existing_desc = description;
                 }
-                // Update name if we got a more specific one
-                if name != "Tool"
-                    && (existing_name == "Tool"
-                        || existing_name == "Read File"
-                        || existing_name == "Edit"
-                        || existing_name == "Terminal")
-                {
+                // Always update name - subsequent updates have the real title
+                if name != "Tool" {
                     *existing_name = name;
                 }
                 // Append raw JSON to the list if provided

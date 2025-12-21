@@ -29,7 +29,7 @@
           inherit src;
           strictDeps = true;
           pname = "amux";
-          version = "0.1.0";
+          version = "0.3.0";
 
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv

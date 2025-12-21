@@ -37,3 +37,6 @@ Thumbs.db
 # Added by cargo
 
 /target
+
+# Nix build output
+/result

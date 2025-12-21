@@ -195,6 +195,7 @@ fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
         .unwrap_or(false);
 
     match key.code {
+        KeyCode::Esc if has_permission => Action::DenyPermission,
         KeyCode::Esc => Action::ExitInsertMode,
 
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::ClearInput,

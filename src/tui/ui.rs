@@ -8,6 +8,7 @@ use ratatui::{
 
 use std::collections::BTreeMap;
 
+use super::interaction::InteractiveRegion;
 use super::theme::*;
 use crate::acp::{PermissionKind, PlanStatus};
 use crate::app::{App, ClickRegion, InputMode, SortMode};
@@ -214,7 +215,7 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
     let line = if let Some(session) = app.selected_session() {
         if let Some(activity) = session.current_activity() {
             // Truncate activity to fit in the available width
-            let prefix = "Current Task: ";
+            let prefix = "Last Prompt: ";
             let prefix_len = prefix.len();
             let max_width = area.width.saturating_sub(2) as usize; // Leave some margin
             let max_activity_width = max_width.saturating_sub(prefix_len);
@@ -626,16 +627,19 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
-    // Register click regions for sidebar hotkeys
+    // Register click regions for sidebar hotkeys (with priority to override session items)
     // "[?] help  " is 10 chars
     let help_bounds = ClickRegion::new(area.x, hotkey_line_y, 10, 1);
-    app.interactions
-        .register_click("sidebar_help", help_bounds, Action::OpenHelp);
+    app.interactions.register(
+        InteractiveRegion::clickable("sidebar_help", help_bounds, Action::OpenHelp).with_priority(1),
+    );
 
     // "[v] <sort_mode>" starts at position 10
     let sort_bounds = ClickRegion::new(area.x + 10, hotkey_line_y, area.width.saturating_sub(10), 1);
-    app.interactions
-        .register_click("sidebar_sort", sort_bounds, Action::CycleSortMode);
+    app.interactions.register(
+        InteractiveRegion::clickable("sidebar_sort", sort_bounds, Action::CycleSortMode)
+            .with_priority(1),
+    );
 }
 
 pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -715,16 +719,9 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             } else {
                                 ("● ".to_string(), TOOL_DOT)
                             };
-                            // Filter out any "undefined" that might have slipped through
-                            let clean_desc = description.as_ref().filter(|d| {
-                                let trimmed = d.trim();
-                                !trimmed.is_empty() && trimmed != "undefined" && trimmed != "null"
-                            });
-                            // Always use Name(...) format, even if description is empty
-                            let display = match clean_desc {
-                                Some(desc) => format!("{}({})", name, desc),
-                                None => format!("{}()", name),
-                            };
+                            // Use the name (title) directly
+                            let _ = description; // unused for now
+                            let display = name.clone();
                             // Wrap tool call display for narrow windows (indicator is 2 chars)
                             let wrapped = wrap_text(&display, inner_width.saturating_sub(2));
                             let mut lines: Vec<Line> = wrapped
@@ -1827,12 +1824,11 @@ pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         option_count = perm.options.len();
 
-        // Header - strip backticks from title
+        // Header
         let title = perm
             .title
             .clone()
-            .unwrap_or_else(|| "Tool".to_string())
-            .replace('`', "");
+            .unwrap_or_else(|| "Tool".to_string());
         lines.push(Line::from(vec![
             Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)),
             Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
