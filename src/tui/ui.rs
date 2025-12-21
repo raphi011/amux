@@ -1530,7 +1530,6 @@ pub fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
-    use crate::app::AgentPickerState;
     use crate::session::AgentType;
 
     let mut lines: Vec<Line> = vec![];
@@ -1549,30 +1548,61 @@ pub fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::raw("")); // spacing
 
-        // List agent options
-        for (i, agent_type) in AgentPickerState::agents().iter().enumerate() {
+        // List agent options with availability status
+        for (i, availability) in picker.agents.iter().enumerate() {
             let is_selected = i == picker.selected;
+            let is_available = availability.is_available();
             let cursor = if is_selected { "> " } else { "  " };
 
-            let (icon, color) = match agent_type {
+            let (icon, color) = match availability.agent_type {
                 AgentType::ClaudeCode => ("", LOGO_CORAL), // Anthropic orange-ish
                 AgentType::GeminiCli => ("", LOGO_LIGHT_BLUE), // Google blue
             };
 
-            let name = agent_type.display_name();
+            let name = availability.agent_type.display_name();
+
+            // Agent name line
+            let name_style = if !is_available {
+                Style::new().fg(TEXT_DIM)
+            } else if is_selected {
+                Style::new().fg(TEXT_WHITE).bold()
+            } else {
+                Style::new().fg(TEXT_WHITE)
+            };
 
             lines.push(Line::from(vec![
                 Span::raw(cursor),
-                Span::styled(format!("{} ", icon), Style::new().fg(color)),
                 Span::styled(
-                    name,
-                    if is_selected {
-                        Style::new().fg(TEXT_WHITE).bold()
+                    format!("{} ", icon),
+                    if is_available {
+                        Style::new().fg(color)
                     } else {
-                        Style::new().fg(TEXT_WHITE)
+                        Style::new().fg(TEXT_DIM)
                     },
                 ),
+                Span::styled(name, name_style),
             ]));
+
+            // Show preconditions with check/cross marks
+            for precondition in &availability.preconditions {
+                let (mark, mark_color) = if precondition.satisfied {
+                    ("✓", Color::Green)
+                } else {
+                    ("✗", Color::Red)
+                };
+
+                lines.push(Line::from(vec![
+                    Span::raw("      "), // indent
+                    Span::styled(mark, Style::new().fg(mark_color)),
+                    Span::raw(" "),
+                    Span::styled(precondition.description, Style::new().fg(TEXT_DIM)),
+                ]));
+            }
+
+            // Add spacing between agents
+            if i < picker.agents.len() - 1 {
+                lines.push(Line::raw(""));
+            }
         }
     }
 

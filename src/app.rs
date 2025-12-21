@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::picker::Picker;
-use crate::session::{AgentType, Session, SessionManager};
+use crate::session::{AgentAvailability, AgentType, Session, SessionManager};
 
 /// Sort/view mode for the session list
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -159,36 +159,42 @@ pub struct AgentPickerState {
     pub cwd: PathBuf,
     pub selected: usize,
     pub is_worktree: bool,
+    /// Availability info for each agent
+    pub agents: Vec<AgentAvailability>,
 }
 
-/// Static list of available agents
-static AVAILABLE_AGENTS: &[AgentType] = &[AgentType::ClaudeCode, AgentType::GeminiCli];
-
 impl AgentPickerState {
-    pub fn new(cwd: PathBuf, is_worktree: bool) -> Self {
+    pub fn new(cwd: PathBuf, is_worktree: bool, agents: Vec<AgentAvailability>) -> Self {
+        // Start with first available agent selected, or 0 if none available
+        let selected = agents
+            .iter()
+            .position(|a| a.is_available())
+            .unwrap_or(0);
         Self {
             cwd,
-            selected: 0,
+            selected,
             is_worktree,
+            agents,
         }
     }
 
-    pub fn agents() -> &'static [AgentType] {
-        AVAILABLE_AGENTS
+    pub fn selected_agent(&self) -> Option<AgentType> {
+        self.selected_item().map(|a| a.agent_type)
     }
 
-    pub fn selected_agent(&self) -> AgentType {
+    /// Check if the selected agent is available
+    pub fn selected_is_available(&self) -> bool {
         self.selected_item()
-            .copied()
-            .unwrap_or(AgentType::ClaudeCode)
+            .map(|a| a.is_available())
+            .unwrap_or(false)
     }
 }
 
 impl Picker for AgentPickerState {
-    type Item = AgentType;
+    type Item = AgentAvailability;
 
     fn items(&self) -> &[Self::Item] {
-        AVAILABLE_AGENTS
+        &self.agents
     }
 
     fn selected_index(&self) -> usize {
@@ -659,8 +665,8 @@ impl App {
     }
 
     /// Open the agent picker for the given directory
-    pub fn open_agent_picker(&mut self, cwd: PathBuf, is_worktree: bool) {
-        self.agent_picker = Some(AgentPickerState::new(cwd, is_worktree));
+    pub fn open_agent_picker(&mut self, cwd: PathBuf, is_worktree: bool, agents: Vec<AgentAvailability>) {
+        self.agent_picker = Some(AgentPickerState::new(cwd, is_worktree, agents));
         self.input_mode = InputMode::AgentPicker;
     }
 

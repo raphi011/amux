@@ -40,6 +40,7 @@ use events::Action;
 use picker::Picker;
 use session::{
     AgentType, OutputType, PendingPermission, PendingQuestion, PermissionMode, SessionState,
+    check_all_agents,
 };
 
 /// Get the current git branch for a directory
@@ -893,7 +894,8 @@ where
                                                 } else {
                                                     let path = entry.path.clone();
                                                     app.close_folder_picker();
-                                                    app.open_agent_picker(path, false);
+                                                    let agents = check_all_agents();
+                                                    app.open_agent_picker(path, false, agents);
                                                 }
                                             }
                                     }
@@ -956,7 +958,8 @@ where
                                                     // Open existing worktree
                                                     let path = entry.path.clone();
                                                     app.close_worktree_picker();
-                                                    app.open_agent_picker(path, true);
+                                                    let agents = check_all_agents();
+                                                    app.open_agent_picker(path, true, agents);
                                                 }
                                             }
                                     }
@@ -1050,7 +1053,8 @@ where
                                                     Ok(()) => {
                                                         app.close_branch_input();
                                                         // Open agent picker for the new worktree
-                                                        app.open_agent_picker(worktree_path, true);
+                                                        let agents = check_all_agents();
+                                                        app.open_agent_picker(worktree_path, true, agents);
                                                     }
                                                     Err(e) => {
                                                         log::log(&format!("Failed to create worktree: {}", e));
@@ -1123,13 +1127,17 @@ where
                                         }
                                     }
                                     KeyCode::Enter => {
-                                        // Spawn session with selected agent
+                                        // Spawn session with selected agent (only if available)
                                         if let Some(picker) = &app.agent_picker {
-                                            let agent_type = picker.selected_agent();
-                                            let cwd = picker.cwd.clone();
-                                            let is_worktree = picker.is_worktree;
-                                            app.close_agent_picker();
-                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
+                                            if picker.selected_is_available() {
+                                                if let Some(agent_type) = picker.selected_agent() {
+                                                    let cwd = picker.cwd.clone();
+                                                    let is_worktree = picker.is_worktree;
+                                                    app.close_agent_picker();
+                                                    spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
+                                                }
+                                            }
+                                            // If not available, do nothing (user can see the ✗ markers)
                                         }
                                     }
                                     _ => {}
