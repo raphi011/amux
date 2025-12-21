@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::picker::Picker;
 use crate::session::{AgentAvailability, AgentType, Session, SessionManager};
+use crate::tui::interaction::InteractionRegistry;
 
 /// Sort/view mode for the session list
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -11,6 +12,8 @@ pub enum SortMode {
     List,
     /// Sessions grouped by git origin
     Grouped,
+    /// Sessions grouped by agent type
+    ByAgent,
     /// Sorted alphabetically by name
     ByName,
     /// Sorted by creation time (oldest first)
@@ -24,7 +27,8 @@ impl SortMode {
     pub fn next(self) -> Self {
         match self {
             SortMode::List => SortMode::Grouped,
-            SortMode::Grouped => SortMode::ByName,
+            SortMode::Grouped => SortMode::ByAgent,
+            SortMode::ByAgent => SortMode::ByName,
             SortMode::ByName => SortMode::ByCreatedTime,
             SortMode::ByCreatedTime => SortMode::Priority,
             SortMode::Priority => SortMode::List,
@@ -36,6 +40,7 @@ impl SortMode {
         match self {
             SortMode::List => "list",
             SortMode::Grouped => "grouped",
+            SortMode::ByAgent => "by agent",
             SortMode::ByName => "by name",
             SortMode::ByCreatedTime => "by time",
             SortMode::Priority => "priority",
@@ -56,6 +61,8 @@ pub enum InputMode {
     BranchInput,               // Entering branch name with autocomplete
     WorktreeCleanup,           // Cleaning up merged worktrees
     WorktreeCleanupRepoPicker, // Selecting git repo for worktree cleanup
+    BugReport,                 // Entering bug report description
+    ClearConfirm,              // Confirming session clear
 }
 
 /// Entry in the folder picker
@@ -415,6 +422,76 @@ impl Picker for BranchInputState {
     }
 }
 
+/// State for bug report input
+#[derive(Debug, Clone)]
+pub struct BugReportState {
+    pub description: String,
+    pub cursor_position: usize,
+    pub log_path: PathBuf,
+}
+
+impl BugReportState {
+    pub fn new(log_path: PathBuf) -> Self {
+        Self {
+            description: String::new(),
+            cursor_position: 0,
+            log_path,
+        }
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        self.description.insert(self.cursor_position, c);
+        self.cursor_position += c.len_utf8();
+    }
+
+    pub fn input_backspace(&mut self) {
+        if self.cursor_position > 0 {
+            let mut new_pos = self.cursor_position - 1;
+            while new_pos > 0 && !self.description.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.description.remove(new_pos);
+            self.cursor_position = new_pos;
+        }
+    }
+
+    pub fn input_delete(&mut self) {
+        if self.cursor_position < self.description.len() {
+            self.description.remove(self.cursor_position);
+        }
+    }
+
+    pub fn input_left(&mut self) {
+        if self.cursor_position > 0 {
+            let mut new_pos = self.cursor_position - 1;
+            while new_pos > 0 && !self.description.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.cursor_position = new_pos;
+        }
+    }
+
+    pub fn input_right(&mut self) {
+        if self.cursor_position < self.description.len() {
+            let mut new_pos = self.cursor_position + 1;
+            while new_pos < self.description.len()
+                && !self.description.is_char_boundary(new_pos)
+            {
+                new_pos += 1;
+            }
+            self.cursor_position = new_pos;
+        }
+    }
+
+    pub fn input_home(&mut self) {
+        self.cursor_position = 0;
+    }
+
+    pub fn input_end(&mut self) {
+        self.cursor_position = self.description.len();
+    }
+}
+
 /// Configuration for git worktrees
 #[derive(Debug, Clone)]
 pub struct WorktreeConfig {
@@ -471,17 +548,14 @@ impl ClickRegion {
     }
 }
 
-/// Clickable areas in the UI, updated during each render
+/// Mapping from display order to internal session indices
+/// Updated during each render based on the current sort mode
 #[derive(Debug, Clone, Default)]
-pub struct ClickAreas {
-    /// The input/prompt field area
-    pub input_field: ClickRegion,
-    /// The permission mode toggle area (e.g., "[tab] normal")
-    pub permission_mode: ClickRegion,
-    /// The model selector area (e.g., "[m] claude-3-5-sonnet")
-    pub model_selector: ClickRegion,
-    /// Session list items (index, region) - each session takes 3 lines
-    pub session_items: Vec<(usize, ClickRegion)>,
+pub struct SessionDisplayOrder {
+    /// Maps display index (0, 1, 2...) to internal session index
+    /// e.g., if sorted_indices[0] = 2, then the first displayed session
+    /// is actually sessions[2]
+    pub display_to_internal: Vec<usize>,
 }
 
 /// An image attachment ready to be sent with a prompt
@@ -504,17 +578,24 @@ pub struct App {
     pub worktree_picker: Option<WorktreePickerState>,
     pub branch_input: Option<BranchInputState>,
     pub worktree_cleanup: Option<WorktreeCleanupState>,
+    pub bug_report: Option<BugReportState>,
     pub spinner_frame: usize,
     pub attachments: Vec<ImageAttachment>,
     pub selected_attachment: Option<usize>,
     pub start_dir: PathBuf,
     pub worktree_config: WorktreeConfig,
-    /// Clickable areas updated during each render
-    pub click_areas: ClickAreas,
+    /// Interactive regions registry, rebuilt each frame during render
+    pub interactions: InteractionRegistry,
+    /// Mapping from display index to internal session index, updated during render
+    pub session_display_order: SessionDisplayOrder,
     /// Counter for generating unique session IDs
     next_session_id: u64,
     /// Session list sort/view mode
     pub sort_mode: SortMode,
+    /// Path to the current log file for bug reports
+    pub log_path: Option<PathBuf>,
+    /// Unique session ID for this amux instance (for matching logs)
+    pub session_id: Option<String>,
 }
 
 impl App {
@@ -531,15 +612,28 @@ impl App {
             worktree_picker: None,
             branch_input: None,
             worktree_cleanup: None,
+            bug_report: None,
             spinner_frame: 0,
             attachments: Vec::new(),
             selected_attachment: None,
             start_dir,
             worktree_config,
-            click_areas: ClickAreas::default(),
+            interactions: InteractionRegistry::new(),
+            session_display_order: SessionDisplayOrder::default(),
             next_session_id: 1,
             sort_mode: SortMode::default(),
+            log_path: None,
+            session_id: None,
         }
+    }
+
+    /// Get the internal session index for a display index (1-9 hotkeys)
+    /// Returns None if the display index is out of bounds
+    pub fn internal_index_for_display(&self, display_idx: usize) -> Option<usize> {
+        self.session_display_order
+            .display_to_internal
+            .get(display_idx)
+            .copied()
     }
 
     /// Cycle through sort modes
@@ -742,6 +836,39 @@ impl App {
     /// Close the help popup
     pub fn close_help(&mut self) {
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the bug report dialog
+    pub fn open_bug_report(&mut self) {
+        let log_path = self.log_path.clone().unwrap_or_default();
+        self.bug_report = Some(BugReportState::new(log_path));
+        self.input_mode = InputMode::BugReport;
+    }
+
+    /// Close the bug report dialog
+    pub fn close_bug_report(&mut self) {
+        self.bug_report = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the clear session confirmation dialog
+    pub fn open_clear_confirm(&mut self) {
+        self.input_mode = InputMode::ClearConfirm;
+    }
+
+    /// Close the clear session confirmation dialog
+    pub fn close_clear_confirm(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Take the bug report description (for submission)
+    pub fn take_bug_report(&mut self) -> Option<(String, PathBuf)> {
+        if let Some(state) = self.bug_report.take() {
+            self.input_mode = InputMode::Normal;
+            Some((state.description, state.log_path))
+        } else {
+            None
+        }
     }
 
     /// Scroll current session up

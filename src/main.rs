@@ -19,7 +19,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ratatui::prelude::*;
 use std::collections::HashMap;
 use std::io::stdout;
@@ -33,9 +33,6 @@ use app::{
     App, CleanupEntry, FolderEntry, ImageAttachment, InputMode, WorktreeConfig, WorktreeEntry,
 };
 use clipboard::ClipboardContent;
-// Events module provides Action-based event handling infrastructure
-// (will be incrementally integrated to replace inline event handling)
-#[allow(unused_imports)]
 use events::Action;
 use picker::Picker;
 use session::{
@@ -326,7 +323,6 @@ enum AgentCommand {
         request_id: u64,
         answer: String,
     },
-    CancelPrompt,
     SetModel {
         session_id: String,
         model_id: String,
@@ -340,13 +336,71 @@ struct ResumeInfo {
     cwd: std::path::PathBuf,
 }
 
+/// Submit a bug report to GitHub using the gh CLI
+async fn submit_bug_report(
+    description: &str,
+    log_path: &std::path::Path,
+    session_id: &str,
+) -> Result<()> {
+    use std::process::Stdio;
+
+    let repo = "raphi011/amux";
+
+    // Build the issue body with session info
+    let body = format!(
+        "## Bug Description\n\n{}\n\n## Session Info\n\n- **Session ID:** `{}`\n- **Log file:** `{}`\n\n## Log Contents\n\n<details>\n<summary>Click to expand log</summary>\n\n```\n{}\n```\n\n</details>",
+        description,
+        session_id,
+        log_path.display(),
+        tokio::fs::read_to_string(log_path).await.unwrap_or_else(|_| "(could not read log file)".to_string())
+    );
+
+    let title = format!("[Bug Report] {}", if description.len() > 50 {
+        format!("{}...", &description[..47])
+    } else {
+        description.to_string()
+    });
+
+    log::log(&format!("Submitting bug report: {}", title));
+
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            &title,
+            "--body",
+            &body,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout);
+        log::log(&format!("Bug report submitted: {}", url.trim()));
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::log(&format!("Failed to submit bug report: {}", stderr));
+        anyhow::bail!("gh command failed: {}", stderr);
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging and panic hook
-    if let Ok(log_path) = log::init() {
+    let (log_path, session_id) = if let Ok((log_path, session_id)) = log::init() {
         log::log(&format!("Log file: {}", log_path.display()));
         log::install_panic_hook();
-    }
+        (Some(log_path), Some(session_id))
+    } else {
+        (None, None)
+    };
 
     // Parse CLI arguments
     let args: Vec<String> = std::env::args().collect();
@@ -407,6 +461,8 @@ async fn main() -> Result<()> {
 
     // Create app state
     let mut app = App::new(start_dir, worktree_config);
+    app.log_path = log_path;
+    app.session_id = session_id;
 
     // Run the app
     let result = run_app(&mut terminal, &mut app).await;
@@ -448,7 +504,9 @@ where
         terminal.draw(|frame| tui::ui::render(frame, app))?;
 
         // Handle events with timeout for responsiveness
+        // Use biased select to prioritize keyboard input over agent events
         tokio::select! {
+            biased;
             // Terminal events (keyboard, paste, etc.)
             maybe_event = event_stream.next() => {
                 if let Some(Ok(event)) = maybe_event {
@@ -484,63 +542,79 @@ where
                         continue;
                     }
 
-                    // Handle mouse events (scroll and click)
+                    // Handle mouse events using the interaction registry
                     if let Event::Mouse(mouse) = &event {
-                        match mouse.kind {
+                        let x = mouse.column;
+                        let y = mouse.row;
+
+                        let action = match mouse.kind {
                             MouseEventKind::ScrollUp => {
-                                app.scroll_up(3);
-                                continue;
+                                let action = app.interactions.handle_scroll_up(x, y);
+                                if matches!(action, Action::None) {
+                                    Action::ScrollUp(3)
+                                } else {
+                                    action
+                                }
                             }
                             MouseEventKind::ScrollDown => {
-                                app.scroll_down(3);
-                                continue;
+                                let action = app.interactions.handle_scroll_down(x, y);
+                                if matches!(action, Action::None) {
+                                    Action::ScrollDown(3)
+                                } else {
+                                    action
+                                }
                             }
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                let x = mouse.column;
-                                let y = mouse.row;
-
-                                // Check if click is on input field - enter insert mode
-                                if app.click_areas.input_field.contains(x, y) {
-                                    if app.sessions.selected_session().is_some() {
-                                        app.enter_insert_mode();
-                                    }
-                                    continue;
-                                }
-
-                                // Check if click is on permission mode toggle
-                                if app.click_areas.permission_mode.contains(x, y) {
-                                    let session_idx = app.sessions.selected_index();
-                                    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                        session.cycle_permission_mode();
-                                    }
-                                    continue;
-                                }
-
-                                // Check if click is on model selector
-                                if app.click_areas.model_selector.contains(x, y) {
-                                    if let Some(session) = app.sessions.selected_session_mut()
-                                        && let Some(model_id) = session.cycle_model() {
-                                            let local_id = session.id.clone();
-                                            let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
-                                            if let Some(cmd_tx) = agent_commands.get(&local_id) {
-                                                let _ = cmd_tx.send(AgentCommand::SetModel {
-                                                    session_id: acp_session_id,
-                                                    model_id,
-                                                }).await;
-                                            }
-                                        }
-                                    continue;
-                                }
-
-                                // Check if click is on a session in the list
-                                for (session_idx, region) in &app.click_areas.session_items {
-                                    if region.contains(x, y) {
-                                        app.sessions.select_index(*session_idx);
-                                        break;
-                                    }
-                                }
+                                app.interactions.handle_click(x, y)
                             }
-                            _ => {}
+                            _ => Action::None,
+                        };
+
+                        // Handle the action
+                        match action {
+                            Action::ScrollUp(n) => {
+                                app.scroll_up(n);
+                                continue;
+                            }
+                            Action::ScrollDown(n) => {
+                                app.scroll_down(n);
+                                continue;
+                            }
+                            Action::EnterInsertMode => {
+                                if app.sessions.selected_session().is_some() {
+                                    app.enter_insert_mode();
+                                }
+                                continue;
+                            }
+                            Action::CyclePermissionMode => {
+                                let session_idx = app.sessions.selected_index();
+                                if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                    session.cycle_permission_mode();
+                                }
+                                continue;
+                            }
+                            Action::CycleModel => {
+                                if let Some(session) = app.sessions.selected_session_mut()
+                                    && let Some(model_id) = session.cycle_model() {
+                                        let local_id = session.id.clone();
+                                        let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
+                                        if let Some(cmd_tx) = agent_commands.get(&local_id) {
+                                            let _ = cmd_tx.send(AgentCommand::SetModel {
+                                                session_id: acp_session_id,
+                                                model_id,
+                                            }).await;
+                                        }
+                                    }
+                                continue;
+                            }
+                            Action::SelectSession(idx) => {
+                                app.sessions.select_index(idx);
+                                continue;
+                            }
+                            Action::None => {}
+                            _ => {
+                                // Other actions not handled by mouse in main loop
+                            }
                         }
                     }
 
@@ -743,18 +817,10 @@ where
                                         KeyCode::Char('?') => {
                                             app.open_help();
                                         }
-                                        KeyCode::Esc => {
-                                            // Cancel current prompt if session is working
-                                            if let Some(session) = app.sessions.selected_session_mut()
-                                                && session.state == SessionState::Prompting {
-                                                    let session_id = session.id.clone();
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
-                                                        let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
-                                                    }
-                                                    session.add_output("⚠ Cancelled".to_string(), OutputType::Text);
-                                                    session.state = SessionState::Idle;
-                                                }
+                                        KeyCode::Char('B') => {
+                                            app.open_bug_report();
                                         }
+
                                         KeyCode::Tab => {
                                             // Cycle permission mode for selected session
                                             if let Some(session) = app.sessions.selected_session_mut() {
@@ -775,10 +841,13 @@ where
                                                     }
                                                 }
                                         }
-                                        // Number keys to select session directly
+                                        // Number keys to select session directly (using display order)
                                         KeyCode::Char(c @ '1'..='9') => {
-                                            let idx = (c as usize) - ('1' as usize);
-                                            app.sessions.select_index(idx);
+                                            let display_idx = (c as usize) - ('1' as usize);
+                                            // Convert display index to internal index
+                                            if let Some(internal_idx) = app.internal_index_for_display(display_idx) {
+                                                app.sessions.select_index(internal_idx);
+                                            }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => app.next_session(),
                                         KeyCode::Char('k') | KeyCode::Up => app.prev_session(),
@@ -815,6 +884,12 @@ where
                                                 let cwd = session.cwd.clone();
                                                 let is_worktree = session.is_worktree;
                                                 spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
+                                            }
+                                        }
+                                        KeyCode::Char('c') => {
+                                            // Clear session (with confirmation)
+                                            if app.sessions.selected_session().is_some() {
+                                                app.open_clear_confirm();
                                             }
                                         }
                                         KeyCode::Char('v') => {
@@ -1181,6 +1256,62 @@ where
                                     _ => {}
                                 }
                             }
+                            InputMode::BugReport => {
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.close_bug_report();
+                                    }
+                                    KeyCode::Enter => {
+                                        // Submit bug report
+                                        if let Some((description, log_path)) = app.take_bug_report() {
+                                            if !description.trim().is_empty() {
+                                                let session_id = app.session_id.clone().unwrap_or_default();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = submit_bug_report(&description, &log_path, &session_id).await {
+                                                        log::log(&format!("Failed to submit bug report: {}", e));
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_char(c);
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_backspace();
+                                        }
+                                    }
+                                    KeyCode::Delete => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_delete();
+                                        }
+                                    }
+                                    KeyCode::Left => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_left();
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_right();
+                                        }
+                                    }
+                                    KeyCode::Home => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_home();
+                                        }
+                                    }
+                                    KeyCode::End => {
+                                        if let Some(bug_report) = &mut app.bug_report {
+                                            bug_report.input_end();
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             InputMode::WorktreeCleanupRepoPicker => {
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('q') => {
@@ -1331,6 +1462,35 @@ where
                                                 }
                                             }
                                         app.close_worktree_cleanup();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            InputMode::ClearConfirm => {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                        // Clear and respawn session
+                                        if let Some(session) = app.sessions.selected_session() {
+                                            let agent_type = session.agent_type;
+                                            let cwd = session.cwd.clone();
+                                            let is_worktree = session.is_worktree;
+                                            let old_session_id = session.id.clone();
+
+                                            // Remove the old session's command channel
+                                            agent_commands.remove(&old_session_id);
+
+                                            // Kill the old session
+                                            app.kill_selected_session();
+
+                                            // Close the confirmation dialog
+                                            app.close_clear_confirm();
+
+                                            // Spawn a new session with the same settings
+                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
+                                        }
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                        app.close_clear_confirm();
                                     }
                                     _ => {}
                                 }
@@ -1555,6 +1715,51 @@ where
                         }
                     } // end Event::Key
                 }
+
+                // Drain any additional pending terminal events before re-rendering
+                while let Some(Some(Ok(event))) = event_stream.next().now_or_never() {
+                    // Handle paste events
+                    if let Event::Paste(text) = &event {
+                        if app.input_mode == InputMode::Normal && app.sessions.selected_session().is_some() {
+                            app.enter_insert_mode();
+                        }
+                        if app.input_mode == InputMode::Insert {
+                            if let Some(path) = clipboard::try_parse_image_path(text) {
+                                if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
+                                    app.add_attachment(ImageAttachment { filename, mime_type, data });
+                                } else {
+                                    for c in text.chars() { app.input_char(c); }
+                                }
+                            } else {
+                                for c in text.chars() { app.input_char(c); }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Handle key events in drain loop
+                    if let Event::Key(key) = event
+                    && key.kind == KeyEventKind::Press {
+                        // Only handle simple insert-mode typing in the drain loop
+                        // Complex actions (mode switches, commands) are handled in the main loop
+                        if app.input_mode == InputMode::Insert {
+                            match key.code {
+                                KeyCode::Char(c) => {
+                                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
+                                        app.input_char(c);
+                                    }
+                                }
+                                KeyCode::Backspace => { app.input_backspace(); }
+                                KeyCode::Left => { app.input_left(); }
+                                KeyCode::Right => { app.input_right(); }
+                                _ => break, // Complex key, exit drain loop and let main loop handle
+                            }
+                        } else {
+                            // Non-insert mode, exit drain loop to handle properly
+                            break;
+                        }
+                    }
+                }
             }
 
             // Agent events
@@ -1570,8 +1775,8 @@ where
                     }
             }
 
-            // Timeout to keep UI responsive and tick spinner
-            _ = tokio::time::sleep(Duration::from_millis(80)) => {
+            // Timeout to keep UI responsive and tick spinner (16ms = ~60 FPS)
+            _ = tokio::time::sleep(Duration::from_millis(16)) => {
                 app.tick_spinner();
             }
         }
@@ -1685,15 +1890,6 @@ async fn spawn_agent_in_dir(
                                 let _ = event_tx
                                     .send(AgentEvent::Error {
                                         message: format!("Ask user response failed: {}", e),
-                                    })
-                                    .await;
-                            }
-                        }
-                        AgentCommand::CancelPrompt => {
-                            if let Err(e) = conn.cancel_prompt().await {
-                                let _ = event_tx
-                                    .send(AgentEvent::Error {
-                                        message: format!("Cancel failed: {}", e),
                                     })
                                     .await;
                             }
@@ -1837,15 +2033,6 @@ async fn spawn_agent_with_resume(
                                 let _ = event_tx
                                     .send(AgentEvent::Error {
                                         message: format!("Ask user response failed: {}", e),
-                                    })
-                                    .await;
-                            }
-                        }
-                        AgentCommand::CancelPrompt => {
-                            if let Err(e) = conn.cancel_prompt().await {
-                                let _ = event_tx
-                                    .send(AgentEvent::Error {
-                                        message: format!("Cancel failed: {}", e),
                                     })
                                     .await;
                             }

@@ -8,6 +8,24 @@ use std::sync::Mutex;
 
 static LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
 static TOOL_LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
+static SESSION_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Generate a short unique session ID (6 hex chars)
+fn generate_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    // Use nanoseconds for uniqueness, take last 24 bits (6 hex chars)
+    let nanos = now.as_nanos() as u32;
+    format!("{:06x}", nanos & 0xFFFFFF)
+}
+
+/// Get the current session ID
+#[allow(dead_code)]
+pub fn session_id() -> Option<String> {
+    SESSION_ID.lock().ok().and_then(|guard| guard.clone())
+}
 
 /// Install a panic hook that logs to the log file
 pub fn install_panic_hook() {
@@ -36,8 +54,16 @@ pub fn install_panic_hook() {
 }
 
 /// Initialize logging to a file
-pub fn init() -> std::io::Result<PathBuf> {
+/// Returns a tuple of (log_path, session_id)
+pub fn init() -> std::io::Result<(PathBuf, String)> {
     let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let sid = generate_session_id();
+
+    // Store the session ID globally
+    if let Ok(mut guard) = SESSION_ID.lock() {
+        *guard = Some(sid.clone());
+    }
+
     let log_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".amux")
@@ -45,8 +71,9 @@ pub fn init() -> std::io::Result<PathBuf> {
 
     std::fs::create_dir_all(&log_dir)?;
 
-    let log_path = log_dir.join(format!("amux_{}.log", timestamp));
-    let tool_log_path = log_dir.join(format!("amux_{}_tools.log", timestamp));
+    // Include session ID in log filename for easy matching
+    let log_path = log_dir.join(format!("amux_{}_{}.log", timestamp, sid));
+    let tool_log_path = log_dir.join(format!("amux_{}_{}_tools.log", timestamp, sid));
 
     let file = OpenOptions::new()
         .create(true)
@@ -63,10 +90,10 @@ pub fn init() -> std::io::Result<PathBuf> {
     *LOG_FILE.lock().unwrap() = Some(file);
     *TOOL_LOG_FILE.lock().unwrap() = Some(tool_file);
 
-    log("=== amux started ===");
-    log_tool("=== amux tool log started ===");
+    log(&format!("=== amux started (session: {}) ===", sid));
+    log_tool(&format!("=== amux tool log started (session: {}) ===", sid));
 
-    Ok(log_path)
+    Ok((log_path, sid))
 }
 
 /// Log a message with timestamp

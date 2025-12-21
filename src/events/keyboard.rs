@@ -5,7 +5,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode};
-use crate::session::SessionState;
 
 use super::Action;
 
@@ -23,6 +22,8 @@ pub fn handle_key_event(app: &App, key: KeyEvent) -> Action {
         InputMode::WorktreeCleanup => handle_worktree_cleanup_mode(key),
         InputMode::WorktreeCleanupRepoPicker => handle_worktree_cleanup_repo_picker_mode(key),
         InputMode::Help => handle_help_mode(key),
+        InputMode::BugReport => handle_bug_report_mode(key),
+        InputMode::ClearConfirm => handle_clear_confirm_mode(key),
     }
 }
 
@@ -52,16 +53,7 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::OpenHelp,
-
-        // Cancel prompt if session is working
-        KeyCode::Esc => {
-            if let Some(session) = app.sessions.selected_session()
-                && session.state == SessionState::Prompting
-            {
-                return Action::CancelPrompt;
-            }
-            Action::None
-        }
+        KeyCode::Char('B') => Action::OpenBugReport,
 
         // Permission mode cycling
         KeyCode::Tab => Action::CyclePermissionMode,
@@ -69,10 +61,15 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
         // Model cycling
         KeyCode::Char('m') => Action::CycleModel,
 
-        // Session selection by number
+        // Session selection by number (using display order)
         KeyCode::Char(c @ '1'..='9') => {
-            let idx = (c as usize) - ('1' as usize);
-            Action::SelectSession(idx)
+            let display_idx = (c as usize) - ('1' as usize);
+            // Convert display index to internal index using the mapping
+            if let Some(internal_idx) = app.internal_index_for_display(display_idx) {
+                Action::SelectSession(internal_idx)
+            } else {
+                Action::None
+            }
         }
 
         // Session navigation
@@ -101,6 +98,9 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
         KeyCode::Char('d') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::DuplicateSession
         }
+
+        // Clear session (with confirmation)
+        KeyCode::Char('c') => Action::OpenClearConfirm,
 
         // Cycle sort mode
         KeyCode::Char('v') => Action::CycleSortMode,
@@ -401,6 +401,29 @@ fn handle_worktree_cleanup_repo_picker_mode(key: KeyEvent) -> Action {
 fn handle_help_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => Action::CloseHelp,
+        _ => Action::None,
+    }
+}
+
+fn handle_clear_confirm_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => Action::ClearSession,
+        KeyCode::Char('n') | KeyCode::Esc => Action::CloseClearConfirm,
+        _ => Action::None,
+    }
+}
+
+fn handle_bug_report_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => Action::CloseBugReport,
+        KeyCode::Enter => Action::SubmitBugReport,
+        KeyCode::Char(c) => Action::BugReportInputChar(c),
+        KeyCode::Backspace => Action::BugReportInputBackspace,
+        KeyCode::Delete => Action::BugReportInputDelete,
+        KeyCode::Left => Action::BugReportInputLeft,
+        KeyCode::Right => Action::BugReportInputRight,
+        KeyCode::Home => Action::BugReportInputHome,
+        KeyCode::End => Action::BugReportInputEnd,
         _ => Action::None,
     }
 }

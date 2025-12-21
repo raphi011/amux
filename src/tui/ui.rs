@@ -10,13 +10,14 @@ use std::collections::BTreeMap;
 
 use super::theme::*;
 use crate::acp::{PermissionKind, PlanStatus};
-use crate::app::{App, InputMode, SortMode};
+use crate::app::{App, ClickRegion, InputMode, SortMode};
+use crate::events::Action;
 use crate::picker::Picker;
 use crate::session::{PermissionMode, Session, SessionState};
 
 // Layout constants
 const SIDEBAR_WIDTH: u16 = 40;
-const SIDEBAR_LEFT_PADDING: u16 = 2;
+const SIDEBAR_LEFT_PADDING: u16 = 1;
 const SEPARATOR_WIDTH: u16 = 1;
 const CONTENT_LEFT_PADDING: u16 = 1;
 const CONTENT_RIGHT_PADDING: u16 = 1;
@@ -24,6 +25,9 @@ const SIDEBAR_INNER_PADDING: u16 = 1;
 const BORDER_WIDTH: u16 = 2;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Clear interaction registry at start of each frame
+    app.interactions.clear();
+
     let area = frame.area();
 
     // Horizontal split: sidebar | left padding | separator | content left padding | main content | content right padding
@@ -113,21 +117,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Right side: title bar + output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
-            Constraint::Length(1), // Title bar
+            Constraint::Length(2), // Title bar + padding
             Constraint::Min(0),    // Output
             Constraint::Length(6), // Permission dialog
         ])
         .split(content_layout[4])
     } else if has_question {
         Layout::vertical([
-            Constraint::Length(1),               // Title bar
+            Constraint::Length(2),               // Title bar + padding
             Constraint::Min(0),                  // Output
             Constraint::Length(question_height), // Question dialog
         ])
         .split(content_layout[4])
     } else {
         Layout::vertical([
-            Constraint::Length(1),                   // Title bar
+            Constraint::Length(2),                   // Title bar + padding
             Constraint::Min(0),                      // Output
             Constraint::Length(1),                   // Empty line above separator
             Constraint::Length(1),                   // Horizontal separator
@@ -175,6 +179,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.input_mode == InputMode::Help {
         render_help_popup(frame, area);
     }
+
+    // Render bug report popup on top if in BugReport mode
+    if app.input_mode == InputMode::BugReport {
+        render_bug_report_popup(frame, area, app);
+    }
+
+    // Render clear session confirmation popup on top if in ClearConfirm mode
+    if app.input_mode == InputMode::ClearConfirm {
+        render_clear_confirm_popup(frame, area, app);
+    }
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {
@@ -198,10 +212,13 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
     let line = if let Some(session) = app.selected_session() {
         if let Some(activity) = session.current_activity() {
             // Truncate activity to fit in the available width
+            let prefix = "Current Task: ";
+            let prefix_len = prefix.len();
             let max_width = area.width.saturating_sub(2) as usize; // Leave some margin
-            let display = if activity.len() > max_width {
+            let max_activity_width = max_width.saturating_sub(prefix_len);
+            let display = if activity.len() > max_activity_width {
                 // Find valid char boundary for truncation
-                let mut end = max_width.saturating_sub(1);
+                let mut end = max_activity_width.saturating_sub(1);
                 while end > 0 && !activity.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -209,13 +226,26 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 activity
             };
-            Line::from(vec![Span::styled(display, Style::new().fg(TEXT_DIM).italic())])
+            // Center the title and use a prominent color
+            let full_display = format!("{}{}", prefix, display);
+            let display_width = full_display.chars().count();
+            let padding = (area.width as usize).saturating_sub(display_width) / 2;
+            Line::from(vec![
+                Span::raw(" ".repeat(padding)),
+                Span::styled(prefix, Style::new().fg(TEXT_DIM)),
+                Span::styled(display, Style::new().fg(LOGO_GOLD).bold()),
+            ])
         } else {
-            // No activity - show session name as fallback
-            Line::from(vec![Span::styled(
-                &session.name,
-                Style::new().fg(TEXT_DIM).italic(),
-            )])
+            // No activity - show last prompt as fallback, centered
+            let prefix = "Last Prompt: ";
+            let prefix_len = prefix.len();
+            let name_width = session.name.chars().count() + prefix_len;
+            let padding = (area.width as usize).saturating_sub(name_width) / 2;
+            Line::from(vec![
+                Span::raw(" ".repeat(padding)),
+                Span::styled(prefix, Style::new().fg(TEXT_DIM)),
+                Span::styled(&session.name, Style::new().fg(LOGO_GOLD).bold()),
+            ])
         }
     } else {
         Line::raw("")
@@ -353,11 +383,8 @@ fn origin_display_name(origin: &str) -> String {
 }
 
 pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    use crate::app::ClickRegion;
-
     // Start with empty line for padding after logo
     let mut session_lines: Vec<Line> = vec![Line::raw("")];
-    let mut session_click_areas: Vec<(usize, ClickRegion)> = vec![];
 
     let spinner = app.spinner();
     let start_dir = app.start_dir.clone();
@@ -393,6 +420,15 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 key_a.cmp(&key_b)
             });
         }
+        SortMode::ByAgent => {
+            // Sort by agent type for grouping
+            sorted_indices.sort_by(|&a, &b| {
+                sessions[a]
+                    .agent_type
+                    .display_name()
+                    .cmp(sessions[b].agent_type.display_name())
+            });
+        }
         SortMode::ByName => {
             // Sort alphabetically by session name
             sorted_indices.sort_by(|&a, &b| sessions[a].name.cmp(&sessions[b].name));
@@ -420,30 +456,38 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // For grouped mode, render with group headers
-    if app.sort_mode == SortMode::Grouped {
-        // Group sessions by git origin, falling back to folder name
+    // For grouped modes, render with group headers
+    if app.sort_mode == SortMode::Grouped || app.sort_mode == SortMode::ByAgent {
+        // Group sessions by git origin or agent type
         let mut groups: BTreeMap<String, Vec<(usize, usize, &Session)>> = BTreeMap::new();
 
         for (display_idx, &original_idx) in sorted_indices.iter().enumerate() {
             let session = &sessions[original_idx];
-            let key = session.git_origin.clone().unwrap_or_else(|| {
-                session
-                    .cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+            let key = if app.sort_mode == SortMode::ByAgent {
+                session.agent_type.display_name().to_string()
+            } else {
+                session.git_origin.clone().unwrap_or_else(|| {
+                    session
+                        .cwd
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                })
+            };
             groups
                 .entry(key)
                 .or_default()
                 .push((display_idx, original_idx, session));
         }
 
-        for (origin, group_sessions) in &groups {
-            // Group header - extract display name from origin or use folder name directly
-            let display_name = origin_display_name(origin);
+        for (group_key, group_sessions) in &groups {
+            // Group header - for ByAgent use key directly, otherwise extract display name
+            let display_name = if app.sort_mode == SortMode::ByAgent {
+                group_key.clone()
+            } else {
+                origin_display_name(group_key)
+            };
 
             session_lines.push(Line::from(vec![
                 Span::styled("● ", Style::new().fg(LOGO_GOLD)),
@@ -463,8 +507,9 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 let entry_lines =
                     render_session_entry(session, display_idx, is_selected, spinner, &start_dir, true);
 
-                // Track click region with original_idx for selection
-                session_click_areas.push((original_idx, ClickRegion::new(area.x, line_y, area.width, 3)));
+                // Register interactive region for session item
+                let bounds = ClickRegion::new(area.x, line_y, area.width, 3);
+                app.interactions.register_session_item(original_idx, bounds);
 
                 session_lines.extend(entry_lines);
             }
@@ -480,15 +525,16 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
             let entry_lines =
                 render_session_entry(session, display_idx, is_selected, spinner, &start_dir, true);
 
-            // Track click region with original_idx for selection
-            session_click_areas.push((original_idx, ClickRegion::new(area.x, line_y, area.width, 3)));
+            // Register interactive region for session item
+            let bounds = ClickRegion::new(area.x, line_y, area.width, 3);
+            app.interactions.register_session_item(original_idx, bounds);
 
             session_lines.extend(entry_lines);
         }
     }
 
-    // Update click areas for sessions
-    app.click_areas.session_items = session_click_areas;
+    // Update display order mapping for hotkey selection (1-9)
+    app.session_display_order.display_to_internal = sorted_indices;
 
     if session_lines.is_empty() {
         session_lines.push(Line::styled("No sessions", Style::new().fg(TEXT_DIM)));
@@ -498,15 +544,25 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
 
-    // Help hint line at bottom of sidebar with sort mode indicator
+    // Help hint line at bottom of sidebar with sort mode indicator and session ID
     let sort_mode_name = app.sort_mode.display_name();
-    let hotkey_lines: Vec<Line> = vec![Line::from(vec![
+    let mut hotkey_lines: Vec<Line> = vec![Line::from(vec![
         Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
         Span::styled(" help  ", Style::new().fg(TEXT_DIM)),
         Span::styled("[v]", Style::new().fg(TEXT_WHITE)),
         Span::styled(" ", Style::new().fg(TEXT_DIM)),
         Span::styled(sort_mode_name, Style::new().fg(LOGO_LIGHT_BLUE)),
     ])];
+
+    // Show session ID for bug reports
+    if let Some(sid) = &app.session_id {
+        hotkey_lines.push(Line::from(vec![
+            Span::styled("[B]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" bug  ", Style::new().fg(TEXT_DIM)),
+            Span::styled("id:", Style::new().fg(TEXT_DIM)),
+            Span::styled(sid.clone(), Style::new().fg(LOGO_GOLD)),
+        ]));
+    }
 
     // Build plan lines for selected session
     let mut plan_lines: Vec<Line> = vec![];
@@ -793,6 +849,15 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
+    // Register output area as scrollable region
+    let output_bounds = ClickRegion::new(area.x, area.y, area.width, area.height);
+    app.interactions.register_scroll(
+        "output_area",
+        output_bounds,
+        Action::ScrollUp(3),
+        Action::ScrollDown(3),
+    );
+
     // Update total_rendered_lines for accurate scroll calculations
     if let Some(total_lines) = computed_total_lines
         && let Some(session) = app.sessions.selected_session_mut()
@@ -1029,27 +1094,31 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
-    // Update click areas (after rendering, so no borrow conflicts)
+    // Register interactive regions
     // Input field: covers attachment lines + input lines (not the mode line)
-    app.click_areas.input_field = ClickRegion::new(
+    let input_bounds = ClickRegion::new(
         area.x,
         area.y,
         area.width,
         (attachment_line_count + input_line_count) as u16,
     );
+    if app.sessions.selected_session().is_some() {
+        app.interactions
+            .register_click("input_field", input_bounds, Action::EnterInsertMode);
+    }
 
     // Permission mode toggle: "[tab] <mode>"
-    app.click_areas.permission_mode =
-        ClickRegion::new(area.x, mode_line_y, permission_mode_width as u16, 1);
+    let perm_bounds = ClickRegion::new(area.x, mode_line_y, permission_mode_width as u16, 1);
+    app.interactions
+        .register_click("permission_mode", perm_bounds, Action::CyclePermissionMode);
 
     // Model selector: "[m] <model_name>" - only if there's a model
     if let Some(model_len) = model_name_len {
         // "[m] " is 4 chars + model name length
         let model_width = 4 + model_len;
-        app.click_areas.model_selector =
-            ClickRegion::new(model_start_x, mode_line_y, model_width as u16, 1);
-    } else {
-        app.click_areas.model_selector = ClickRegion::default();
+        let model_bounds = ClickRegion::new(model_start_x, mode_line_y, model_width as u16, 1);
+        app.interactions
+            .register_click("model_selector", model_bounds, Action::CycleModel);
     }
 
     // Set cursor position when in insert mode and not selecting attachments
@@ -1847,7 +1916,7 @@ pub fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
 pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     // Calculate centered popup area
     let popup_width = 50u16;
-    let popup_height = 25u16;
+    let popup_height = 26u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(
@@ -1895,6 +1964,10 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Span::styled("Duplicate session", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
+        Span::styled("  c       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Clear session (restart)", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
         Span::styled("  v       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Cycle sort mode", Style::new().fg(TEXT_DIM)),
     ]));
@@ -1921,6 +1994,10 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  m       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Cycle model", Style::new().fg(TEXT_DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  B       ", Style::new().fg(TEXT_WHITE)),
+        Span::styled("Report bug", Style::new().fg(TEXT_DIM)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  q       ", Style::new().fg(TEXT_WHITE)),
@@ -1959,6 +2036,170 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(LOGO_LIGHT_BLUE))
+        .style(Style::new().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
+pub fn render_bug_report_popup(frame: &mut Frame, area: Rect, app: &App) {
+    // Calculate centered popup area
+    let popup_width = 60u16;
+    let popup_height = 12u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = vec![];
+
+    // Title
+    lines.push(Line::from(vec![Span::styled(
+        "Report a Bug",
+        Style::new().fg(LOGO_CORAL).bold(),
+    )]));
+    lines.push(Line::raw(""));
+
+    // Instructions
+    lines.push(Line::from(vec![Span::styled(
+        "Describe the bug you encountered:",
+        Style::new().fg(TEXT_DIM),
+    )]));
+    lines.push(Line::raw(""));
+
+    // Input field
+    let description = if let Some(bug_report) = &app.bug_report {
+        &bug_report.description
+    } else {
+        ""
+    };
+
+    // Wrap input to fit popup width (minus borders and padding)
+    let input_width = (popup_width - 4) as usize;
+    let wrapped = wrap_text(description, input_width);
+    for line_text in &wrapped {
+        lines.push(Line::from(vec![
+            Span::styled("> ", Style::new().fg(LOGO_MINT)),
+            Span::styled(line_text.clone(), Style::new().fg(TEXT_WHITE)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Session ID and log path info
+    if let Some(sid) = &app.session_id {
+        lines.push(Line::from(vec![
+            Span::styled("Session ID: ", Style::new().fg(TEXT_DIM)),
+            Span::styled(sid.clone(), Style::new().fg(LOGO_GOLD).bold()),
+        ]));
+    }
+    if let Some(bug_report) = &app.bug_report {
+        let log_display = bug_report
+            .log_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("(no log)");
+        lines.push(Line::from(vec![
+            Span::styled("Log file: ", Style::new().fg(TEXT_DIM)),
+            Span::styled(log_display, Style::new().fg(LOGO_LIGHT_BLUE)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Footer
+    lines.push(Line::from(vec![
+        Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" submit  ", Style::new().fg(TEXT_DIM)),
+        Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(LOGO_CORAL))
+        .style(Style::new().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+
+    // Set cursor position
+    if let Some(bug_report) = &app.bug_report {
+        let char_pos = bug_report.description[..bug_report.cursor_position]
+            .chars()
+            .count();
+        let cursor_line = char_pos / input_width;
+        let cursor_col = char_pos % input_width;
+
+        // Account for border (1), prompt "> " (2)
+        let cursor_x = popup_area.x + 1 + 2 + cursor_col as u16;
+        // Account for border (1), title (1), empty (1), instructions (1), empty (1), then input lines
+        let cursor_y = popup_area.y + 5 + cursor_line as u16;
+
+        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+    }
+}
+
+pub fn render_clear_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
+    // Get session name for display
+    let session_name = app
+        .selected_session()
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "session".to_string());
+
+    // Calculate centered popup area
+    let popup_width = 50u16;
+    let popup_height = 8u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = vec![];
+
+    // Title
+    lines.push(Line::from(vec![Span::styled(
+        "Clear Session",
+        Style::new().fg(LOGO_CORAL).bold(),
+    )]));
+    lines.push(Line::raw(""));
+
+    // Warning message
+    lines.push(Line::from(vec![Span::styled(
+        format!("Clear \"{}\" and start fresh?", session_name),
+        Style::new().fg(TEXT_WHITE),
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        "All conversation history will be lost.",
+        Style::new().fg(TEXT_DIM),
+    )]));
+    lines.push(Line::raw(""));
+
+    // Footer with options
+    lines.push(Line::from(vec![
+        Span::styled("[y]", Style::new().fg(LOGO_CORAL)),
+        Span::styled(" yes  ", Style::new().fg(TEXT_DIM)),
+        Span::styled("[n]", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" no", Style::new().fg(TEXT_DIM)),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(LOGO_CORAL))
         .style(Style::new().bg(Color::Black));
 
     let paragraph = Paragraph::new(lines).block(block);

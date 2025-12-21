@@ -57,6 +57,12 @@ pub enum Action {
     },
     /// Duplicate current session (same folder, same agent)
     DuplicateSession,
+    /// Clear current session (replace with fresh session)
+    ClearSession,
+    /// Open clear session confirmation dialog
+    OpenClearConfirm,
+    /// Close clear session confirmation dialog
+    CloseClearConfirm,
     /// Kill selected session
     KillSession,
 
@@ -252,9 +258,27 @@ pub enum Action {
     /// Delete selected attachment
     DeleteSelectedAttachment,
 
-    // === Prompt control ===
-    /// Cancel current prompt (Esc in normal mode when prompting)
-    CancelPrompt,
+    // === Bug Report ===
+    /// Open bug report dialog
+    OpenBugReport,
+    /// Close bug report dialog
+    CloseBugReport,
+    /// Submit bug report
+    SubmitBugReport,
+    /// Input character into bug report
+    BugReportInputChar(char),
+    /// Delete character in bug report
+    BugReportInputBackspace,
+    /// Delete at cursor in bug report
+    BugReportInputDelete,
+    /// Move cursor left in bug report
+    BugReportInputLeft,
+    /// Move cursor right in bug report
+    BugReportInputRight,
+    /// Move cursor to start in bug report
+    BugReportInputHome,
+    /// Move cursor to end in bug report
+    BugReportInputEnd,
 
     // === No-op ===
     /// No action to take
