@@ -36,7 +36,7 @@ use clipboard::ClipboardContent;
 use events::Action;
 use picker::Picker;
 use session::{
-    AgentType, OutputType, PendingPermission, PendingQuestion, PermissionMode, SessionState,
+    AgentType, OutputType, PendingPermission, PendingQuestion, SessionState,
     check_all_agents,
 };
 
@@ -453,8 +453,11 @@ async fn main() -> Result<()> {
         i += 1;
     }
 
-    // Load worktree config with precedence: CLI > env var > default
-    let worktree_config = WorktreeConfig::load(worktree_dir_override);
+    // Load config
+    let config = config::Config::load();
+
+    // Load worktree config with precedence: CLI > env var > config file > default
+    let worktree_config = WorktreeConfig::load(worktree_dir_override.or(config.worktree_dir.clone()));
 
     // Setup terminal
     enable_raw_mode()?;
@@ -469,7 +472,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new(start_dir, worktree_config);
+    let mut app = App::new(start_dir, worktree_config, config.mcp_servers);
     app.log_path = log_path;
     app.session_id = session_id;
 
@@ -1854,6 +1857,20 @@ where
             Some(event) = app_event_rx.recv() => {
                 match event {
                     AppEvent::WorktreeDeleted(path) => {
+                        // Kill any sessions running in the deleted worktree
+                        let sessions_to_kill: Vec<String> = app.sessions.sessions()
+                            .iter()
+                            .filter(|s| s.cwd == path)
+                            .map(|s| s.id.clone())
+                            .collect();
+
+                        for session_id in sessions_to_kill {
+                            log::log(&format!("Killing session {} in deleted worktree {}", session_id, path.display()));
+                            agent_commands.remove(&session_id);
+                            // Remove session from manager
+                            app.sessions.sessions_mut().retain(|s| s.id != session_id);
+                        }
+
                         // Remove the deleted entry from the cleanup list
                         if let Some(cleanup) = &mut app.worktree_cleanup {
                             cleanup.entries.retain(|e| e.path != path);
@@ -1902,6 +1919,13 @@ async fn spawn_agent_in_dir(
         session.git_origin = origin;
     }
 
+    // Convert MCP servers from config format to protocol format
+    let mcp_servers: Vec<acp::McpServer> = app
+        .mcp_servers
+        .iter()
+        .map(acp::McpServer::from)
+        .collect();
+
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
     agent_commands.insert(session_id.clone(), cmd_tx.clone());
@@ -1939,8 +1963,8 @@ async fn spawn_agent_in_dir(
                     return;
                 }
 
-                // Create session
-                if let Err(e) = conn.new_session(cwd_clone.to_str().unwrap_or(".")).await {
+                // Create session with MCP servers
+                if let Err(e) = conn.new_session(cwd_clone.to_str().unwrap_or("."), mcp_servers).await {
                     let _ = event_tx
                         .send(AgentEvent::Error {
                             message: format!("Session failed: {}", e),
@@ -2042,6 +2066,13 @@ async fn spawn_agent_with_resume(
         session.git_branch = branch;
     }
 
+    // Convert MCP servers from config format to protocol format
+    let mcp_servers: Vec<acp::McpServer> = app
+        .mcp_servers
+        .iter()
+        .map(acp::McpServer::from)
+        .collect();
+
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
     agent_commands.insert(session_id.clone(), cmd_tx.clone());
@@ -2079,9 +2110,9 @@ async fn spawn_agent_with_resume(
                     return;
                 }
 
-                // Load existing session
+                // Load existing session with MCP servers
                 if let Err(e) = conn
-                    .load_session(&resume_session_id, cwd_clone.to_str().unwrap_or("."))
+                    .load_session(&resume_session_id, cwd_clone.to_str().unwrap_or("."), mcp_servers)
                     .await
                 {
                     let _ = event_tx
@@ -2300,8 +2331,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                             session.append_text(text);
                         }
                     }
-                    SessionUpdate::AgentThoughtChunk => {
-                        // Silently ignore
+                    SessionUpdate::AgentThoughtChunk { content } => {
+                        if let acp::protocol::UpdateContent::Text { text } = content {
+                            session.append_thought(text);
+                        }
                     }
                     SessionUpdate::ToolCall {
                         tool_call_id,
@@ -2371,8 +2404,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 options,
                 ..
             } => {
-                // Check if we should auto-accept (AcceptAll mode)
-                if session.permission_mode == PermissionMode::AcceptAll {
+                // Check if we should auto-accept (AcceptAll or Yolo mode)
+                if session.permission_mode.auto_accepts() {
                     // Find the first allow_once option
                     if let Some(option) = options
                         .iter()

@@ -101,9 +101,10 @@ impl SessionState {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PermissionMode {
     #[default]
-    Normal, // Ask for each permission
+    Normal,    // Ask for each permission
     Plan,      // Plan mode - more cautious
     AcceptAll, // Auto-accept all permissions
+    Yolo,      // Auto-accept everything, no questions asked
 }
 
 impl PermissionMode {
@@ -112,7 +113,8 @@ impl PermissionMode {
         match self {
             PermissionMode::Normal => PermissionMode::Plan,
             PermissionMode::Plan => PermissionMode::AcceptAll,
-            PermissionMode::AcceptAll => PermissionMode::Normal,
+            PermissionMode::AcceptAll => PermissionMode::Yolo,
+            PermissionMode::Yolo => PermissionMode::Normal,
         }
     }
 
@@ -123,7 +125,13 @@ impl PermissionMode {
             PermissionMode::Normal => "normal",
             PermissionMode::Plan => "plan",
             PermissionMode::AcceptAll => "accept all",
+            PermissionMode::Yolo => "yolo",
         }
+    }
+
+    /// Returns true if this mode auto-accepts permissions
+    pub fn auto_accepts(&self) -> bool {
+        matches!(self, PermissionMode::AcceptAll | PermissionMode::Yolo)
     }
 }
 
@@ -345,6 +353,7 @@ pub struct OutputLine {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputType {
     Text,      // Agent response text
+    Thought,   // Agent thought/reasoning text (dimmed)
     UserInput, // User's prompt
     ToolCall {
         tool_call_id: String,
@@ -548,6 +557,20 @@ impl Session {
         }
         // No text line to append to, create new one
         self.add_output(text, OutputType::Text);
+    }
+
+    /// Append thought text to the last thought line, or create new thought line
+    pub fn append_thought(&mut self, text: String) {
+        if let Some(last) = self.output.last_mut() {
+            // Only append to non-empty thought lines
+            if matches!(last.line_type, OutputType::Thought) && !last.content.is_empty() {
+                last.content.push_str(&text);
+                self.last_activity = Some(Instant::now());
+                return;
+            }
+        }
+        // No thought line to append to, create new one
+        self.add_output(text, OutputType::Thought);
     }
 
     /// Check if a tool call with this ID already exists

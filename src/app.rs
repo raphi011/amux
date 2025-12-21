@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::config::McpServerConfig;
 use crate::picker::Picker;
 use crate::session::{AgentAvailability, AgentType, Session, SessionManager};
 use crate::tui::interaction::InteractionRegistry;
@@ -600,10 +601,12 @@ pub struct App {
     pub session_id: Option<String>,
     /// Debug mode: show raw ACP JSON under tool calls (toggle with 't')
     pub debug_tool_json: bool,
+    /// MCP servers to pass to agent sessions
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 impl App {
-    pub fn new(start_dir: PathBuf, worktree_config: WorktreeConfig) -> Self {
+    pub fn new(start_dir: PathBuf, worktree_config: WorktreeConfig, mcp_servers: Vec<McpServerConfig>) -> Self {
         Self {
             sessions: SessionManager::new(),
             input_mode: InputMode::Normal,
@@ -630,6 +633,7 @@ impl App {
             log_path: None,
             session_id: None,
             debug_tool_json: false,
+            mcp_servers,
         }
     }
 

@@ -802,10 +802,10 @@ impl AgentConnection {
     }
 
     /// Create a new session
-    pub async fn new_session(&mut self, cwd: &str) -> Result<()> {
+    pub async fn new_session(&mut self, cwd: &str, mcp_servers: Vec<McpServer>) -> Result<()> {
         let params = NewSessionParams {
             cwd: cwd.to_string(),
-            mcp_servers: vec![],
+            mcp_servers,
         };
 
         let request = JsonRpcRequest::new(
@@ -817,11 +817,11 @@ impl AgentConnection {
     }
 
     /// Load an existing session
-    pub async fn load_session(&mut self, session_id: &str, cwd: &str) -> Result<()> {
+    pub async fn load_session(&mut self, session_id: &str, cwd: &str, mcp_servers: Vec<McpServer>) -> Result<()> {
         let params = LoadSessionParams {
             session_id: session_id.to_string(),
             cwd: cwd.to_string(),
-            mcp_servers: vec![],
+            mcp_servers,
         };
 
         let request = JsonRpcRequest::new(

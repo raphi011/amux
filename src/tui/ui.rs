@@ -690,6 +690,22 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 inner_width as u16,
                             )
                         }
+                        OutputType::Thought => {
+                            // Agent thought/reasoning - golden italic text
+                            if output_line.content.is_empty() {
+                                return vec![Line::raw("")];
+                            }
+                            let wrapped = wrap_text(&output_line.content, inner_width);
+                            wrapped
+                                .into_iter()
+                                .map(|text| {
+                                    Line::from(vec![Span::styled(
+                                        text,
+                                        Style::new().fg(LOGO_GOLD).italic(),
+                                    )])
+                                })
+                                .collect()
+                        }
                         OutputType::UserInput => {
                             // User prompt - cyan/blue
                             let wrapped = wrap_text(&output_line.content, inner_width);
@@ -719,15 +735,17 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             } else {
                                 ("● ".to_string(), TOOL_DOT)
                             };
-                            // Use the name (title) directly
+                            // Use the name (title) directly, rendered as markdown
                             let _ = description; // unused for now
-                            let display = name.clone();
-                            // Wrap tool call display for narrow windows (indicator is 2 chars)
-                            let wrapped = wrap_text(&display, inner_width.saturating_sub(2));
-                            let mut lines: Vec<Line> = wrapped
+                            let skin = ratskin::RatSkin::default();
+                            let parsed_lines = skin.parse(
+                                ratskin::RatSkin::parse_text(name),
+                                inner_width.saturating_sub(2) as u16,
+                            );
+                            let mut lines: Vec<Line> = parsed_lines
                                 .into_iter()
                                 .enumerate()
-                                .map(|(i, text)| {
+                                .map(|(i, mut line)| {
                                     let prefix = if i == 0 {
                                         Span::styled(
                                             indicator.clone(),
@@ -736,10 +754,8 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                     } else {
                                         Span::styled("  ", Style::new().fg(indicator_color))
                                     };
-                                    Line::from(vec![
-                                        prefix,
-                                        Span::styled(text, Style::new().fg(TEXT_WHITE).bold()),
-                                    ])
+                                    line.spans.insert(0, prefix);
+                                    line
                                 })
                                 .collect();
                             
@@ -1078,6 +1094,7 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
                 PermissionMode::Normal => "normal",
                 PermissionMode::Plan => "plan",
                 PermissionMode::AcceptAll => "accept all",
+                PermissionMode::Yolo => "yolo",
             };
             // "[tab] " is 6 chars, then the mode text
             let perm_width = 6 + mode_str.len();
@@ -1097,6 +1114,7 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
             PermissionMode::Normal => ("normal", TEXT_DIM),
             PermissionMode::Plan => ("plan", LOGO_GOLD),
             PermissionMode::AcceptAll => ("accept all", LOGO_MINT),
+            PermissionMode::Yolo => ("yolo", Color::Red),
         };
         let mut spans = vec![
             Span::styled("[tab] ", Style::new().fg(TEXT_DIM)),

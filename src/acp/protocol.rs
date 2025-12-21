@@ -107,12 +107,40 @@ pub struct AgentInfo {
 // Session types
 // ============================================================================
 
-#[derive(Debug, Serialize)]
+/// Environment variable for MCP server
+#[derive(Debug, Serialize, Clone)]
+pub struct McpEnvVar {
+    pub name: String,
+    pub value: String,
+}
+
+/// MCP server configuration for ACP protocol
+#[derive(Debug, Serialize, Clone)]
 pub struct McpServer {
     pub name: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    pub env: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<McpEnvVar>,
+}
+
+impl From<&crate::config::McpServerConfig> for McpServer {
+    fn from(config: &crate::config::McpServerConfig) -> Self {
+        Self {
+            name: config.name.clone(),
+            command: config.command.clone(),
+            args: config.args.clone(),
+            env: config
+                .env
+                .iter()
+                .map(|(k, v)| McpEnvVar {
+                    name: k.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -260,7 +288,9 @@ pub enum SessionUpdate {
     AgentMessageChunk {
         content: UpdateContent,
     },
-    AgentThoughtChunk,
+    AgentThoughtChunk {
+        content: UpdateContent,
+    },
     ToolCall {
         tool_call_id: String,
         title: Option<String>,
@@ -301,7 +331,12 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                         .unwrap_or(UpdateContent::Other);
                 Ok(SessionUpdate::AgentMessageChunk { content })
             }
-            Some("agent_thought_chunk") => Ok(SessionUpdate::AgentThoughtChunk),
+            Some("agent_thought_chunk") => {
+                let content =
+                    serde_json::from_value(value.get("content").cloned().unwrap_or(Value::Null))
+                        .unwrap_or(UpdateContent::Other);
+                Ok(SessionUpdate::AgentThoughtChunk { content })
+            }
             Some("tool_call") => {
                 // Extract description from rawInput if present
                 // Priority: description > file_path > command > pattern > query

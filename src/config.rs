@@ -13,10 +13,23 @@
 //! worktree_dir = "~/.amux/worktrees"
 //! default_agent = "ClaudeCode"
 //! theme = "dark"
+//!
+//! # MCP servers available to all sessions
+//! [[mcp_servers]]
+//! name = "filesystem"
+//! command = "npx"
+//! args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+//!
+//! [[mcp_servers]]
+//! name = "github"
+//! command = "npx"
+//! args = ["-y", "@modelcontextprotocol/server-github"]
+//! env = { GITHUB_TOKEN = "xxx" }
 //! ```
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -39,6 +52,28 @@ pub struct Config {
     /// Keybinding customization (reserved for future use)
     #[serde(default)]
     pub keybindings: KeyBindings,
+
+    /// MCP servers to make available to agent sessions
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+}
+
+/// MCP server configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    /// Unique name for this MCP server
+    pub name: String,
+
+    /// Command to run (for stdio transport)
+    pub command: String,
+
+    /// Arguments to pass to the command
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Environment variables (name -> value)
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 /// Custom keybinding configuration (reserved for future use).

@@ -86,6 +86,33 @@ Both agents implement ACP natively. The `AgentType` enum in `src/session/state.r
 - `command()` - Returns the executable name
 - `args()` - Returns any required flags (e.g., `--experimental-acp` for Gemini)
 
+### MCP Server Configuration
+
+MCP (Model Context Protocol) servers can be configured in `~/.config/amux/config.toml`. These servers are passed to agent sessions via ACP's `session/new` params.
+
+```toml
+# Example MCP server configurations
+
+[[mcp_servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+
+[[mcp_servers]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "your-token-here" }
+
+[[mcp_servers]]
+name = "postgres"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-postgres"]
+env = { DATABASE_URL = "postgresql://localhost/mydb" }
+```
+
+**Note:** The ACP adapter (`claude-code-acp`) does NOT use Claude Code's standard MCP config (`~/.claude/mcp.json`). MCP servers must be configured in amux's config file to be available in sessions.
+
 ## Debug Logging
 
 Logs are written to `~/.amux/logs/amux_<timestamp>.log` containing:
