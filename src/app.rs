@@ -72,7 +72,8 @@ pub struct FolderEntry {
     pub name: String,
     pub path: PathBuf,
     pub git_branch: Option<String>,
-    pub is_parent: bool, // ".." entry
+    pub is_parent: bool,  // ".." entry
+    pub is_current: bool, // "." entry (current directory)
 }
 
 /// State for the folder picker
