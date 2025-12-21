@@ -110,21 +110,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         6
     };
 
-    // Right side: output + separator + permission/question/input
+    // Right side: title bar + output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
+            Constraint::Length(1), // Title bar
             Constraint::Min(0),    // Output
             Constraint::Length(6), // Permission dialog
         ])
         .split(content_layout[4])
     } else if has_question {
         Layout::vertical([
+            Constraint::Length(1),               // Title bar
             Constraint::Min(0),                  // Output
             Constraint::Length(question_height), // Question dialog
         ])
         .split(content_layout[4])
     } else {
         Layout::vertical([
+            Constraint::Length(1),                   // Title bar
             Constraint::Min(0),                      // Output
             Constraint::Length(1),                   // Empty line above separator
             Constraint::Length(1),                   // Horizontal separator
@@ -134,35 +137,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(content_layout[4])
     };
 
+    // Render title bar
+    render_title_bar(frame, right_layout[0], app);
+
     // Render folder picker, agent picker, session picker, branch input, worktree picker, or output area
     if app.input_mode == InputMode::FolderPicker
         || app.input_mode == InputMode::WorktreeFolderPicker
         || app.input_mode == InputMode::WorktreeCleanupRepoPicker
     {
-        render_folder_picker(frame, right_layout[0], app);
+        render_folder_picker(frame, right_layout[1], app);
     } else if app.input_mode == InputMode::WorktreePicker {
-        render_worktree_picker(frame, right_layout[0], app);
+        render_worktree_picker(frame, right_layout[1], app);
     } else if app.input_mode == InputMode::BranchInput {
-        render_branch_input(frame, right_layout[0], app);
+        render_branch_input(frame, right_layout[1], app);
     } else if app.input_mode == InputMode::AgentPicker {
-        render_agent_picker(frame, right_layout[0], app);
+        render_agent_picker(frame, right_layout[1], app);
     } else if app.input_mode == InputMode::SessionPicker {
-        render_session_picker(frame, right_layout[0], app);
+        render_session_picker(frame, right_layout[1], app);
     } else if app.input_mode == InputMode::WorktreeCleanup {
-        render_worktree_cleanup(frame, right_layout[0], app);
+        render_worktree_cleanup(frame, right_layout[1], app);
     } else {
-        render_output_area(frame, right_layout[0], app);
+        render_output_area(frame, right_layout[1], app);
     }
 
     // Render permission dialog, question dialog, or input bar
     if has_permission {
-        render_permission_dialog(frame, right_layout[1], app);
+        render_permission_dialog(frame, right_layout[2], app);
     } else if has_question {
-        render_question_dialog(frame, right_layout[1], app);
+        render_question_dialog(frame, right_layout[2], app);
     } else {
-        // Render horizontal separator (index 1 is empty, 2 is separator, 3 is empty, 4 is input)
-        render_horizontal_separator(frame, right_layout[2]);
-        render_input_bar(frame, right_layout[4], app);
+        // Render horizontal separator (index 2 is empty, 3 is separator, 4 is empty, 5 is input)
+        render_horizontal_separator(frame, right_layout[3]);
+        render_input_bar(frame, right_layout[5], app);
     }
 
     // Render help popup on top if in Help mode
@@ -184,6 +190,37 @@ fn render_horizontal_separator(frame: &mut Frame, area: Rect) {
     // Draw a horizontal line of ─ characters
     let separator = "─".repeat(area.width as usize);
     let line = Line::styled(separator, Style::new().fg(TEXT_DIM));
+    let paragraph = Paragraph::new(line);
+    frame.render_widget(paragraph, area);
+}
+
+fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let line = if let Some(session) = app.selected_session() {
+        if let Some(activity) = session.current_activity() {
+            // Truncate activity to fit in the available width
+            let max_width = area.width.saturating_sub(2) as usize; // Leave some margin
+            let display = if activity.len() > max_width {
+                // Find valid char boundary for truncation
+                let mut end = max_width.saturating_sub(1);
+                while end > 0 && !activity.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}…", &activity[..end])
+            } else {
+                activity
+            };
+            Line::from(vec![Span::styled(display, Style::new().fg(TEXT_DIM).italic())])
+        } else {
+            // No activity - show session name as fallback
+            Line::from(vec![Span::styled(
+                &session.name,
+                Style::new().fg(TEXT_DIM).italic(),
+            )])
+        }
+    } else {
+        Line::raw("")
+    };
+
     let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
 }

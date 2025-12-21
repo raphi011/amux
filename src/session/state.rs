@@ -1,4 +1,4 @@
-use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
+use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry, PlanStatus};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
@@ -469,6 +469,29 @@ impl Session {
                 .find(|m| &m.model_id == id)
                 .map(|m| m.name.as_str())
         })
+    }
+
+    /// Get a description of what the agent is currently working on.
+    /// Returns the in-progress plan entry if available, otherwise falls back
+    /// to the last user prompt.
+    pub fn current_activity(&self) -> Option<String> {
+        // First priority: in-progress plan entry
+        if let Some(entry) = self
+            .plan_entries
+            .iter()
+            .find(|e| e.status == PlanStatus::InProgress)
+        {
+            return Some(entry.content.clone());
+        }
+
+        // Second priority: last user prompt
+        for line in self.output.iter().rev() {
+            if matches!(line.line_type, OutputType::UserInput) {
+                return Some(line.content.clone());
+            }
+        }
+
+        None
     }
 
     /// Scroll up by n lines. If at bottom (usize::MAX), first normalize to actual position.
