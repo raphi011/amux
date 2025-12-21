@@ -9,28 +9,37 @@ use ratatui::{
 use crate::app::{App, InputMode};
 use crate::session::{SessionState, PermissionMode};
 use crate::acp::{PermissionKind, PlanStatus};
+use crate::picker::Picker;
 use super::theme::*;
+
+// Layout constants
+const SIDEBAR_WIDTH: u16 = 40;
+const SIDEBAR_LEFT_PADDING: u16 = 2;
+const SEPARATOR_WIDTH: u16 = 1;
+const CONTENT_LEFT_PADDING: u16 = 3;
+const SIDEBAR_INNER_PADDING: u16 = 1;
+const BORDER_WIDTH: u16 = 2;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     // Horizontal split: sidebar | left padding | separator | right padding | main content
     let content_layout = Layout::horizontal([
-        Constraint::Length(40), // Sidebar (38 + 2 for left/right padding)
-        Constraint::Length(2),  // Left padding (2 spaces)
-        Constraint::Length(1),  // Separator
-        Constraint::Length(3),  // Right padding (3 spaces)
-        Constraint::Min(0),     // Main content
+        Constraint::Length(SIDEBAR_WIDTH),
+        Constraint::Length(SIDEBAR_LEFT_PADDING),
+        Constraint::Length(SEPARATOR_WIDTH),
+        Constraint::Length(CONTENT_LEFT_PADDING),
+        Constraint::Min(0), // Main content
     ])
     .split(area);
 
     // Sidebar with 1-char padding on left/right, no top padding
     let sidebar_outer = content_layout[0];
     let sidebar_inner = Rect {
-        x: sidebar_outer.x + 1,
+        x: sidebar_outer.x + SIDEBAR_INNER_PADDING,
         y: sidebar_outer.y,
-        width: sidebar_outer.width.saturating_sub(2),
-        height: sidebar_outer.height.saturating_sub(1),
+        width: sidebar_outer.width.saturating_sub(BORDER_WIDTH),
+        height: sidebar_outer.height.saturating_sub(SIDEBAR_INNER_PADDING),
     };
 
     // Sidebar: logo + session list (includes hotkeys and plan at bottom)
@@ -340,11 +349,14 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
+fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
     use crate::session::OutputType;
 
-    let inner_height = area.height.saturating_sub(0) as usize;
+    let inner_height = area.height as usize;
     let inner_width = area.width.saturating_sub(2) as usize; // Account for border
+
+    // Track total rendered lines to update session afterwards
+    let mut computed_total_lines: Option<usize> = None;
 
     let lines: Vec<Line> = if let Some(session) = app.selected_session() {
         if session.output.is_empty() {
@@ -493,11 +505,13 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
             // Apply scroll offset to visual lines
             // usize::MAX means "scroll to bottom"
             let total_lines = all_lines.len();
-            let start = if session.scroll_offset == usize::MAX {
+            computed_total_lines = Some(total_lines);
+            let scroll_offset = session.scroll_offset;
+            let start = if scroll_offset == usize::MAX {
                 // Scroll to bottom: show last viewport worth of lines
                 total_lines.saturating_sub(inner_height)
             } else {
-                session.scroll_offset.min(total_lines.saturating_sub(1))
+                scroll_offset.min(total_lines.saturating_sub(1))
             };
             let end = (start + inner_height).min(total_lines);
             all_lines[start..end].to_vec()
@@ -510,8 +524,14 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let paragraph = Paragraph::new(lines);
-
     frame.render_widget(paragraph, area);
+
+    // Update total_rendered_lines for accurate scroll calculations
+    if let Some(total_lines) = computed_total_lines {
+        if let Some(session) = app.sessions.selected_session_mut() {
+            session.total_rendered_lines = total_lines;
+        }
+    }
 }
 /// Wrap text to fit within width, preserving words where possible
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -772,6 +792,7 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         // (simple division doesn't work because word wrap produces variable-length lines)
         let mut cursor_line = 0;
         let mut cursor_col = char_position;
+        let mut found = false;
         let mut chars_so_far = 0;
 
         for (i, line_text) in wrapped.iter().enumerate() {
@@ -779,6 +800,7 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
             if chars_so_far + line_chars >= char_position {
                 cursor_line = i;
                 cursor_col = char_position - chars_so_far;
+                found = true;
                 break;
             }
             chars_so_far += line_chars;
@@ -789,7 +811,7 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         // If cursor is past all content (at the very end), put it at end of last line
-        if char_position > chars_so_far {
+        if !found {
             cursor_line = wrapped.len().saturating_sub(1);
             cursor_col = wrapped.last().map(|l| l.chars().count()).unwrap_or(0);
         }
@@ -797,10 +819,11 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         // Add prompt offset (both "> " and "  " are 2 chars)
         let x_offset = 2;
 
-        frame.set_cursor_position(Position::new(
-            area.x + x_offset as u16 + cursor_col as u16,
-            area.y + attachment_line_count as u16 + cursor_line as u16,
-        ));
+        let cursor_x = area.x + x_offset as u16 + cursor_col as u16;
+        let cursor_y = area.y + attachment_line_count as u16 + cursor_line as u16;
+        crate::log::log(&format!("Cursor render: byte_pos={}, char_pos={}, cursor_col={}, cursor_line={}, x={}, y={}, wrapped={:?}", 
+            app.cursor_position, char_position, cursor_col, cursor_line, cursor_x, cursor_y, wrapped));
+        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 }
 

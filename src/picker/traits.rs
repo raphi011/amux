@@ -78,6 +78,7 @@ pub trait Picker {
     }
 
     /// Select a specific index (clamped to valid range)
+    #[allow(dead_code)]
     fn select_index(&mut self, index: usize) {
         if !self.is_empty() {
             let clamped = index.min(self.len() - 1);
@@ -86,6 +87,7 @@ pub trait Picker {
     }
 
     /// Reset selection to the first item
+    #[allow(dead_code)]
     fn reset_selection(&mut self) {
         self.set_selected_index(0);
     }

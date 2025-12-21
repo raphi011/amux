@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::time::Instant;
 use crate::acp::{PermissionOptionInfo, PermissionKind, PlanEntry, AskUserOption};
@@ -45,6 +43,7 @@ pub enum SessionState {
 
 impl SessionState {
     /// Check if a transition to the target state is valid
+    #[allow(dead_code)]
     pub fn can_transition_to(&self, target: SessionState) -> bool {
         use SessionState::*;
         match (self, target) {
@@ -81,11 +80,13 @@ impl SessionState {
     }
 
     /// Returns true if the session is waiting for user interaction
+    #[allow(dead_code)]
     pub fn awaiting_user(&self) -> bool {
         matches!(self, SessionState::AwaitingPermission | SessionState::AwaitingUserInput)
     }
 
     /// Returns true if the session can receive a new prompt
+    #[allow(dead_code)]
     pub fn can_prompt(&self) -> bool {
         matches!(self, SessionState::Idle)
     }
@@ -111,6 +112,7 @@ impl PermissionMode {
     }
 
     /// Display name for the mode
+    #[allow(dead_code)]
     pub fn display(&self) -> &'static str {
         match self {
             PermissionMode::Normal => "normal",
@@ -121,6 +123,7 @@ impl PermissionMode {
 }
 
 impl SessionState {
+    #[allow(dead_code)]
     pub fn display(&self) -> &'static str {
         match self {
             SessionState::Spawning => "spawning...",
@@ -141,6 +144,7 @@ impl SessionState {
 #[derive(Debug, Clone)]
 pub struct PendingPermission {
     pub request_id: u64,
+    #[allow(dead_code)]
     pub tool_call_id: String,
     pub title: Option<String>,
     pub options: Vec<PermissionOptionInfo>,
@@ -176,6 +180,7 @@ pub struct PendingQuestion {
     pub request_id: u64,
     pub question: String,
     pub options: Vec<AskUserOption>,
+    #[allow(dead_code)]
     pub multi_select: bool,
     pub selected: usize,
     pub input: String,
@@ -269,18 +274,25 @@ impl PendingQuestion {
 
 #[derive(Debug, Clone)]
 pub struct Session {
+    /// Local session ID (stable, used as HashMap key for agent_commands)
     pub id: String,
+    /// ACP session ID from the agent (used in protocol messages)
+    pub acp_session_id: Option<String>,
     pub name: String,
     pub agent_type: AgentType,
     pub state: SessionState,
     pub cwd: PathBuf,
     pub git_branch: String,
     pub is_worktree: bool,
+    #[allow(dead_code)] // TODO: Display token usage in UI
     pub tokens_input: u32,
+    #[allow(dead_code)] // TODO: Display token usage in UI
     pub tokens_output: u32,
     pub output: Vec<OutputLine>,
     pub last_activity: Option<Instant>,
     pub scroll_offset: usize,
+    /// Total rendered lines after text wrapping (updated during render)
+    pub total_rendered_lines: usize,
     pub pending_permission: Option<PendingPermission>,
     pub pending_question: Option<PendingQuestion>,
     pub plan_entries: Vec<PlanEntry>,
@@ -324,6 +336,7 @@ impl Session {
     pub fn new(id: String, name: String, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> Self {
         Self {
             id,
+            acp_session_id: None,
             name,
             agent_type,
             state: SessionState::Spawning,
@@ -335,6 +348,7 @@ impl Session {
             output: vec![],
             last_activity: Some(Instant::now()),
             scroll_offset: usize::MAX,
+            total_rendered_lines: 0,
             pending_permission: None,
             pending_question: None,
             plan_entries: vec![],
@@ -351,6 +365,7 @@ impl Session {
     /// 
     /// This method validates the transition and logs a warning if the
     /// transition is invalid (but still allows it for backward compatibility).
+    #[allow(dead_code)]
     pub fn transition_to(&mut self, new_state: SessionState) {
         if !self.state.can_transition_to(new_state) {
             crate::log::log(&format!(
@@ -362,16 +377,19 @@ impl Session {
     }
 
     /// Check if the session has a pending permission request
+    #[allow(dead_code)]
     pub fn has_pending_permission(&self) -> bool {
         self.pending_permission.is_some()
     }
 
     /// Check if the session has a pending question
+    #[allow(dead_code)]
     pub fn has_pending_question(&self) -> bool {
         self.pending_question.is_some()
     }
 
     /// Check if the session is awaiting any user input
+    #[allow(dead_code)]
     pub fn is_awaiting_user(&self) -> bool {
         self.state.awaiting_user()
     }
@@ -443,6 +461,7 @@ impl Session {
         self.scroll_offset = usize::MAX;
     }
 
+    #[allow(dead_code)] // TODO: Display token usage in UI
     pub fn total_tokens(&self) -> u32 {
         self.tokens_input + self.tokens_output
     }
@@ -570,6 +589,7 @@ impl Session {
     pub fn mock(id: &str, name: &str, agent_type: AgentType, branch: &str) -> Self {
         Self {
             id: id.to_string(),
+            acp_session_id: None,
             name: name.to_string(),
             agent_type,
             state: SessionState::Idle,
@@ -581,6 +601,7 @@ impl Session {
             output: vec![],
             last_activity: None,
             scroll_offset: usize::MAX,
+            total_rendered_lines: 0,
             pending_permission: None,
             pending_question: None,
             plan_entries: vec![],

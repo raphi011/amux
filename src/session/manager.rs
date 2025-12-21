@@ -1,10 +1,27 @@
 #![allow(dead_code)]
 
 use super::state::{AgentType, Session};
+use crate::picker::Picker;
 
 pub struct SessionManager {
     sessions: Vec<Session>,
     selected: usize,
+}
+
+impl Picker for SessionManager {
+    type Item = Session;
+
+    fn items(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: usize) {
+        self.selected = index;
+    }
 }
 
 impl SessionManager {
@@ -37,34 +54,12 @@ impl SessionManager {
         &mut self.sessions
     }
 
-    pub fn selected_index(&self) -> usize {
-        self.selected
-    }
-
     pub fn selected_session(&self) -> Option<&Session> {
-        self.sessions.get(self.selected)
+        self.selected_item()
     }
 
     pub fn selected_session_mut(&mut self) -> Option<&mut Session> {
         self.sessions.get_mut(self.selected)
-    }
-
-    pub fn select_next(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected = (self.selected + 1) % self.sessions.len();
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.sessions.len() - 1);
-        }
-    }
-
-    pub fn select_index(&mut self, index: usize) {
-        if index < self.sessions.len() {
-            self.selected = index;
-        }
     }
 
     pub fn add_session(&mut self, session: Session) {
@@ -86,14 +81,6 @@ impl SessionManager {
         }
 
         Some(removed)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.sessions.len()
     }
 
     /// Find a session by its unique ID and return a mutable reference

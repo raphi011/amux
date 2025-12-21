@@ -94,9 +94,15 @@ Logs are written to `~/.amux/logs/amux_<timestamp>.log` containing:
 
 ## TODO
 
-- [ ] **Token output** - Display token usage (input/output tokens) for each session
-- [ ] **Session resume** - Resume previous sessions (requires `session/load` ACP support)
 - [x] **Markdown rendering** - Using ratskin 0.3 for termimad-based markdown rendering
+
+## Blocked on ACP
+
+These features require ACP spec/agent support that doesn't exist yet:
+
+- **Token usage** - Display input/output tokens per session. ACP doesn't currently expose token counts in session updates.
+- **Session resume** - Resume previous sessions. Requires `session/load` ACP support which is not yet implemented.
+- **Prompt cancellation** - Esc sends `$/cancel_request` but agents don't honor it. Cancellation is still a draft feature in the ACP spec (see protocol/draft/cancellation).
 
 ## Building
 

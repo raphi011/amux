@@ -12,7 +12,6 @@ struct SessionEntry {
     session_id: Option<String>,
     cwd: Option<String>,
     timestamp: Option<String>,
-    slug: Option<String>,
     message: Option<MessageContent>,
     #[serde(rename = "type")]
     entry_type: Option<String>,
@@ -93,7 +92,6 @@ async fn parse_session_file(path: &PathBuf) -> Option<ResumableSession> {
     let mut cwd: Option<PathBuf> = None;
     let mut first_prompt: Option<String> = None;
     let mut timestamp: Option<DateTime<Utc>> = None;
-    let mut slug: Option<String> = None;
 
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -116,13 +114,6 @@ async fn parse_session_file(path: &PathBuf) -> Option<ResumableSession> {
         if cwd.is_none() {
             if let Some(ref c) = entry.cwd {
                 cwd = Some(PathBuf::from(c));
-            }
-        }
-
-        // Extract slug from first entry that has it
-        if slug.is_none() {
-            if let Some(ref s) = entry.slug {
-                slug = Some(s.clone());
             }
         }
 
@@ -175,7 +166,6 @@ async fn parse_session_file(path: &PathBuf) -> Option<ResumableSession> {
         cwd,
         first_prompt,
         timestamp,
-        slug,
     })
 }
 

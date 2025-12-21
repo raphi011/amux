@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 use chrono::Local;
 
 static LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
+static TOOL_LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
 
 /// Install a panic hook that logs to the log file
 pub fn install_panic_hook() {
@@ -45,6 +46,7 @@ pub fn init() -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(&log_dir)?;
 
     let log_path = log_dir.join(format!("amux_{}.log", timestamp));
+    let tool_log_path = log_dir.join(format!("amux_{}_tools.log", timestamp));
 
     let file = OpenOptions::new()
         .create(true)
@@ -52,9 +54,17 @@ pub fn init() -> std::io::Result<PathBuf> {
         .truncate(true)
         .open(&log_path)?;
 
+    let tool_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tool_log_path)?;
+
     *LOG_FILE.lock().unwrap() = Some(file);
+    *TOOL_LOG_FILE.lock().unwrap() = Some(tool_file);
 
     log("=== amux started ===");
+    log_tool("=== amux tool log started ===");
 
     Ok(log_path)
 }
@@ -110,4 +120,23 @@ pub fn log_outgoing(line: &str) {
 /// Log an event
 pub fn log_event(event: &str) {
     log(&format!("[EVENT] {}", event));
+}
+
+/// Log a tool call JSON to the dedicated tools log file
+pub fn log_tool(msg: &str) {
+    let timestamp = Local::now().format("%H:%M:%S%.3f");
+    let line = format!("[{}] {}\n", timestamp, msg);
+
+    if let Ok(mut guard) = TOOL_LOG_FILE.lock() {
+        if let Some(ref mut file) = *guard {
+            let _ = file.write_all(line.as_bytes());
+            let _ = file.flush();
+        }
+    }
+}
+
+/// Log a tool call with pretty-printed JSON
+pub fn log_tool_json(tool_name: &str, json: &serde_json::Value) {
+    let pretty = serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
+    log_tool(&format!("=== {} ===\n{}", tool_name, pretty));
 }

@@ -1,12 +1,9 @@
 mod acp;
 mod app;
 mod clipboard;
-mod error;
 mod git;
-mod handlers;
 mod log;
 mod picker;
-mod services;
 mod session;
 mod tui;
 
@@ -464,10 +461,11 @@ where
                                 if app.click_areas.model_selector.contains(x, y) {
                                     if let Some(session) = app.sessions.selected_session_mut() {
                                         if let Some(model_id) = session.cycle_model() {
-                                            let session_id = session.id.clone();
-                                            if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                            let local_id = session.id.clone();
+                                            let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
+                                            if let Some(cmd_tx) = agent_commands.get(&local_id) {
                                                 let _ = cmd_tx.send(AgentCommand::SetModel {
-                                                    session_id,
+                                                    session_id: acp_session_id,
                                                     model_id,
                                                 }).await;
                                             }
@@ -727,10 +725,11 @@ where
                                             // Cycle model for selected session
                                             if let Some(session) = app.sessions.selected_session_mut() {
                                                 if let Some(model_id) = session.cycle_model() {
-                                                    let session_id = session.id.clone();
-                                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                    let local_id = session.id.clone();
+                                                    let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
+                                                    if let Some(cmd_tx) = agent_commands.get(&local_id) {
                                                         let _ = cmd_tx.send(AgentCommand::SetModel {
-                                                            session_id,
+                                                            session_id: acp_session_id,
                                                             model_id,
                                                         }).await;
                                                     }
@@ -780,13 +779,7 @@ where
                                             }
                                         }
 
-                                        // TODO: 'r' for resume - waiting for session/load ACP support
-                                        // KeyCode::Char('r') => {
-                                        //     let sessions = scan_resumable_sessions().await;
-                                        //     if !sessions.is_empty() {
-                                        //         app.open_session_picker(sessions);
-                                        //     }
-                                        // }
+
                                         // Scroll output - vim style
                                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                             // Ctrl+u: half page up
@@ -1237,7 +1230,6 @@ where
                                 }
                             }
                             InputMode::WorktreeCleanup => {
-                                log::log(&format!("WorktreeCleanup key: {:?}", key.code));
                                 match key.code {
                                     KeyCode::Esc | KeyCode::Char('q') => {
                                         app.close_worktree_cleanup();
@@ -1277,10 +1269,8 @@ where
                                         }
                                     }
                                     KeyCode::Enter => {
-                                        log::log("Enter pressed in WorktreeCleanup");
                                         // Perform cleanup of selected worktrees
                                         if let Some(cleanup) = &app.worktree_cleanup {
-                                            log::log(&format!("has_selection: {}", cleanup.has_selection()));
                                             if cleanup.has_selection() {
                                                 let repo_path = cleanup.repo_path.clone();
                                                 let delete_branches = cleanup.delete_branches;
@@ -1316,6 +1306,9 @@ where
                                 }
                             }
                             InputMode::Insert => {
+                                // Log all key events in insert mode for debugging
+                                log::log(&format!("Insert mode key: {:?}, modifiers: {:?}", key.code, key.modifiers));
+
                                 // Check if there's a pending permission request
                                 let has_permission = app.sessions.selected_session()
                                     .map(|s| s.pending_permission.is_some())
@@ -1504,18 +1497,22 @@ where
                                         }
                                     }
                                     KeyCode::Left => {
+                                        log::log(&format!("Left key pressed, cursor_position={}, input_len={}", app.cursor_position, app.input_buffer.len()));
                                         if app.selected_attachment.is_some() {
                                             app.attachment_left();
                                         } else {
                                             app.input_left();
                                         }
+                                        log::log(&format!("After input_left, cursor_position={}", app.cursor_position));
                                     }
                                     KeyCode::Right => {
+                                        log::log(&format!("Right key pressed, cursor_position={}, input_len={}", app.cursor_position, app.input_buffer.len()));
                                         if app.selected_attachment.is_some() {
                                             app.attachment_right();
                                         } else {
                                             app.input_right();
                                         }
+                                        log::log(&format!("After input_right, cursor_position={}", app.cursor_position));
                                     }
                                     KeyCode::Char(c) => {
                                         // Typing deselects attachment and goes back to input
@@ -1813,7 +1810,9 @@ async fn send_prompt(
         }
         session.state = SessionState::Prompting;
 
-        let session_id = session.id.clone();
+        // Use local ID for HashMap lookup, ACP session ID for protocol
+        let local_id = session.id.clone();
+        let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
 
         // Build content blocks
         if has_attachments {
@@ -1833,17 +1832,17 @@ async fn send_prompt(
             }
 
             // Send with content blocks
-            if let Some(cmd_tx) = agent_commands.get(&session_id) {
+            if let Some(cmd_tx) = agent_commands.get(&local_id) {
                 let _ = cmd_tx.send(AgentCommand::PromptWithContent {
-                    session_id,
+                    session_id: acp_session_id,
                     content,
                 }).await;
             }
         } else {
             // Send simple text prompt
-            if let Some(cmd_tx) = agent_commands.get(&session_id) {
+            if let Some(cmd_tx) = agent_commands.get(&local_id) {
                 let _ = cmd_tx.send(AgentCommand::Prompt {
-                    session_id,
+                    session_id: acp_session_id,
                     text: text.to_string(),
                 }).await;
             }
@@ -1887,7 +1886,9 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 }
             }
             AgentEvent::SessionCreated { session_id, models } => {
-                session.id = session_id;
+                // Store the ACP session ID (used in protocol messages)
+                // Keep session.id as the local stable ID (used for HashMap keys)
+                session.acp_session_id = Some(session_id);
                 session.state = SessionState::Idle;
                 // Store model info if available
                 if let Some(models_state) = models {

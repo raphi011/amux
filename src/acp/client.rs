@@ -183,6 +183,16 @@ impl AgentConnection {
                     Ok(IncomingMessage::Notification { method, params }) => {
                         if method == "session/update" {
                             if let Some(params) = params {
+                                // Log tool_call updates to dedicated tools log
+                                if let Some(update) = params.get("update") {
+                                    if update.get("sessionUpdate").and_then(|s| s.as_str()) == Some("tool_call") {
+                                        let tool_name = update.get("title")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("unknown");
+                                        log::log_tool_json(tool_name, update);
+                                    }
+                                }
+
                                 match serde_json::from_value::<SessionUpdateParams>(params.clone()) {
                                     Ok(update_params) => {
                                         let _ = event_tx_clone
@@ -428,26 +438,26 @@ impl AgentConnection {
                                         let terminals_clone = Arc::clone(&terminals);
                                         let terminal_id_clone = terminal_id.clone();
                                         tokio::spawn(async move {
-                                            let result = tokio::task::spawn_blocking(move || {
-                                                let mut cmd = std::process::Command::new("sh");
-                                                cmd.arg("-c");
-                                                cmd.arg(&full_command);
-                                                if let Some(cwd) = &cwd {
-                                                    cmd.current_dir(cwd);
-                                                }
-                                                for (name, value) in &env_vars {
-                                                    cmd.env(name, value);
-                                                }
-                                                cmd.stdout(std::process::Stdio::piped());
-                                                cmd.stderr(std::process::Stdio::piped());
-                                                cmd.output()
-                                            }).await;
+                                            // Use tokio::process::Command directly (async native)
+                                            let mut cmd = Command::new("sh");
+                                            cmd.arg("-c");
+                                            cmd.arg(&full_command);
+                                            if let Some(cwd) = &cwd {
+                                                cmd.current_dir(cwd);
+                                            }
+                                            for (name, value) in &env_vars {
+                                                cmd.env(name, value);
+                                            }
+                                            cmd.stdout(Stdio::piped());
+                                            cmd.stderr(Stdio::piped());
+
+                                            let result = cmd.output().await;
 
                                             // Update terminal with results
                                             let mut terms = terminals_clone.lock().await;
                                             if let Some(terminal) = terms.get_mut(&terminal_id_clone) {
                                                 match result {
-                                                    Ok(Ok(output)) => {
+                                                    Ok(output) => {
                                                         let mut out = String::from_utf8_lossy(&output.stdout).to_string();
                                                         out.push_str(&String::from_utf8_lossy(&output.stderr));
 
@@ -461,12 +471,8 @@ impl AgentConnection {
                                                         terminal.output = out;
                                                         terminal.exit_code = output.status.code();
                                                     }
-                                                    Ok(Err(e)) => {
-                                                        terminal.output = format!("Error: {}", e);
-                                                        terminal.exit_code = Some(-1);
-                                                    }
                                                     Err(e) => {
-                                                        terminal.output = format!("Task failed: {}", e);
+                                                        terminal.output = format!("Error: {}", e);
                                                         terminal.exit_code = Some(-1);
                                                     }
                                                 }

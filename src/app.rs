@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use crate::picker::Picker;
@@ -54,7 +52,6 @@ pub struct ResumableSession {
     pub cwd: PathBuf,
     pub first_prompt: Option<String>,
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
-    pub slug: Option<String>,
 }
 
 /// State for the session picker
@@ -65,6 +62,7 @@ pub struct SessionPickerState {
 }
 
 impl SessionPickerState {
+    #[allow(dead_code)] // TODO: Session resume feature
     pub fn new(sessions: Vec<ResumableSession>) -> Self {
         Self { sessions, selected: 0 }
     }
@@ -565,26 +563,6 @@ impl App {
         }
     }
 
-    /// Navigate into selected folder or go to parent
-    pub fn folder_picker_enter(&mut self) -> Option<PathBuf> {
-        if let Some(picker) = &mut self.folder_picker {
-            if let Some(entry) = picker.entries.get(picker.selected) {
-                if entry.is_parent {
-                    // Go to parent directory
-                    if let Some(parent) = picker.current_dir.parent() {
-                        picker.current_dir = parent.to_path_buf();
-                        picker.selected = 0;
-                        return None; // Signal to rescan
-                    }
-                } else {
-                    // Return selected path for spawning session
-                    return Some(entry.path.clone());
-                }
-            }
-        }
-        None
-    }
-
     /// Enter into a subdirectory
     pub fn folder_picker_enter_dir(&mut self) -> bool {
         if let Some(picker) = &mut self.folder_picker {
@@ -624,6 +602,7 @@ impl App {
     }
 
     /// Open the session picker with resumable sessions
+    #[allow(dead_code)] // TODO: Session resume feature
     pub fn open_session_picker(&mut self, sessions: Vec<ResumableSession>) {
         self.session_picker = Some(SessionPickerState::new(sessions));
         self.input_mode = InputMode::SessionPicker;
@@ -690,18 +669,12 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    /// Update viewport height (called from render)
-    pub fn set_viewport_height(&mut self, height: usize) {
-        self.viewport_height = height;
-    }
-
     /// Scroll current session up
     pub fn scroll_up(&mut self, n: usize) {
         let viewport = self.viewport_height;
         if let Some(session) = self.sessions.selected_session_mut() {
-            // Use output length as approximation for total lines
-            // (actual rendered lines may be more due to wrapping, but this is good enough)
-            let total_lines = session.output.len().max(viewport);
+            // Use total_rendered_lines which accounts for text wrapping
+            let total_lines = session.total_rendered_lines.max(viewport);
             session.scroll_up(n, total_lines, viewport);
         }
     }
@@ -710,7 +683,8 @@ impl App {
     pub fn scroll_down(&mut self, n: usize) {
         let viewport = self.viewport_height;
         if let Some(session) = self.sessions.selected_session_mut() {
-            let total_lines = session.output.len().max(viewport);
+            // Use total_rendered_lines which accounts for text wrapping
+            let total_lines = session.total_rendered_lines.max(viewport);
             session.scroll_down(n, total_lines, viewport);
         }
     }
