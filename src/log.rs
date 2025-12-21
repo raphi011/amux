@@ -1,10 +1,10 @@
+use chrono::Local;
+use once_cell::sync::Lazy;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::panic;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::panic;
-use once_cell::sync::Lazy;
-use chrono::Local;
 
 static LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
 static TOOL_LOG_FILE: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
@@ -74,11 +74,11 @@ pub fn log(msg: &str) {
     let timestamp = Local::now().format("%H:%M:%S%.3f");
     let line = format!("[{}] {}\n", timestamp, msg);
 
-    if let Ok(mut guard) = LOG_FILE.lock() {
-        if let Some(ref mut file) = *guard {
-            let _ = file.write_all(line.as_bytes());
-            let _ = file.flush();
-        }
+    if let Ok(mut guard) = LOG_FILE.lock()
+        && let Some(ref mut file) = *guard
+    {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
     }
 }
 
@@ -127,11 +127,11 @@ pub fn log_tool(msg: &str) {
     let timestamp = Local::now().format("%H:%M:%S%.3f");
     let line = format!("[{}] {}\n", timestamp, msg);
 
-    if let Ok(mut guard) = TOOL_LOG_FILE.lock() {
-        if let Some(ref mut file) = *guard {
-            let _ = file.write_all(line.as_bytes());
-            let _ = file.flush();
-        }
+    if let Ok(mut guard) = TOOL_LOG_FILE.lock()
+        && let Some(ref mut file) = *guard
+    {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
     }
 }
 

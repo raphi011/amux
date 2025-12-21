@@ -35,10 +35,10 @@ pub fn read_clipboard() -> Result<ClipboardContent> {
     }
 
     // Fall back to text
-    if let Ok(text) = clipboard.get_text() {
-        if !text.is_empty() {
-            return Ok(ClipboardContent::Text(text));
-        }
+    if let Ok(text) = clipboard.get_text()
+        && !text.is_empty()
+    {
+        return Ok(ClipboardContent::Text(text));
     }
 
     Ok(ClipboardContent::None)
@@ -60,12 +60,7 @@ fn encode_as_png(img: &arboard::ImageData) -> Result<Vec<u8>> {
     // Encode as PNG
     let mut png_data = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
-    encoder.write_image(
-        &img_buffer,
-        width,
-        height,
-        image::ExtendedColorType::Rgba8,
-    )?;
+    encoder.write_image(&img_buffer, width, height, image::ExtendedColorType::Rgba8)?;
 
     Ok(png_data)
 }

@@ -1,9 +1,8 @@
-pub mod protocol;
 mod client;
+pub mod protocol;
 
-pub use protocol::{
-    SessionUpdate, PermissionOptionInfo, PermissionKind,
-    PlanEntry, PlanStatus, PermissionOptionId, ContentBlock,
-    ModelInfo, AskUserOption, AskUserResponse,
-};
 pub use client::{AgentConnection, AgentEvent};
+pub use protocol::{
+    AskUserOption, AskUserResponse, ContentBlock, ModelInfo, PermissionKind, PermissionOptionId,
+    PermissionOptionInfo, PlanEntry, PlanStatus, SessionUpdate,
+};

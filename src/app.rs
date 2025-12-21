@@ -1,20 +1,20 @@
 use std::path::PathBuf;
 
 use crate::picker::Picker;
-use crate::session::{Session, SessionManager, AgentType};
+use crate::session::{AgentType, Session, SessionManager};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
-    Normal,              // Navigation mode
-    Insert,              // Typing mode
-    FolderPicker,        // Selecting folder for new session
-    AgentPicker,         // Selecting agent type for new session
-    SessionPicker,       // Selecting session to resume
-    Help,                // Help popup showing all hotkeys
-    WorktreePicker,      // Selecting existing worktree or create new
-    WorktreeFolderPicker, // Selecting git repo for worktree
-    BranchInput,         // Entering branch name with autocomplete
-    WorktreeCleanup,     // Cleaning up merged worktrees
+    Normal,                    // Navigation mode
+    Insert,                    // Typing mode
+    FolderPicker,              // Selecting folder for new session
+    AgentPicker,               // Selecting agent type for new session
+    SessionPicker,             // Selecting session to resume
+    Help,                      // Help popup showing all hotkeys
+    WorktreePicker,            // Selecting existing worktree or create new
+    WorktreeFolderPicker,      // Selecting git repo for worktree
+    BranchInput,               // Entering branch name with autocomplete
+    WorktreeCleanup,           // Cleaning up merged worktrees
     WorktreeCleanupRepoPicker, // Selecting git repo for worktree cleanup
 }
 
@@ -64,7 +64,10 @@ pub struct SessionPickerState {
 impl SessionPickerState {
     #[allow(dead_code)] // TODO: Session resume feature
     pub fn new(sessions: Vec<ResumableSession>) -> Self {
-        Self { sessions, selected: 0 }
+        Self {
+            sessions,
+            selected: 0,
+        }
     }
 
     pub fn selected_session(&self) -> Option<&ResumableSession> {
@@ -123,7 +126,11 @@ static AVAILABLE_AGENTS: &[AgentType] = &[AgentType::ClaudeCode, AgentType::Gemi
 
 impl AgentPickerState {
     pub fn new(cwd: PathBuf, is_worktree: bool) -> Self {
-        Self { cwd, selected: 0, is_worktree }
+        Self {
+            cwd,
+            selected: 0,
+            is_worktree,
+        }
     }
 
     pub fn agents() -> &'static [AgentType] {
@@ -131,7 +138,9 @@ impl AgentPickerState {
     }
 
     pub fn selected_agent(&self) -> AgentType {
-        self.selected_item().copied().unwrap_or(AgentType::ClaudeCode)
+        self.selected_item()
+            .copied()
+            .unwrap_or(AgentType::ClaudeCode)
     }
 }
 
@@ -172,7 +181,10 @@ pub struct WorktreePickerState {
 
 impl WorktreePickerState {
     pub fn new(entries: Vec<WorktreeEntry>) -> Self {
-        Self { entries, selected: 0 }
+        Self {
+            entries,
+            selected: 0,
+        }
     }
 
     pub fn selected_entry(&self) -> Option<&WorktreeEntry> {
@@ -211,7 +223,7 @@ pub struct CleanupEntry {
     pub branch: Option<String>,
     pub is_clean: bool,
     pub is_merged: bool,
-    pub selected: bool,  // Whether this entry is selected for cleanup
+    pub selected: bool, // Whether this entry is selected for cleanup
 }
 
 /// State for the worktree cleanup picker
@@ -220,7 +232,7 @@ pub struct WorktreeCleanupState {
     pub repo_path: std::path::PathBuf,
     pub entries: Vec<CleanupEntry>,
     pub cursor: usize,
-    pub delete_branches: bool,  // Whether to also delete branches
+    pub delete_branches: bool, // Whether to also delete branches
 }
 
 impl WorktreeCleanupState {
@@ -266,7 +278,10 @@ impl WorktreeCleanupState {
     }
 
     pub fn cleanable_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.is_clean && e.is_merged).count()
+        self.entries
+            .iter()
+            .filter(|e| e.is_clean && e.is_merged)
+            .count()
     }
 }
 
@@ -314,7 +329,8 @@ impl BranchInputState {
     /// Filter branches based on current input
     pub fn update_filter(&mut self) {
         let query = self.input.to_lowercase();
-        self.filtered = self.branches
+        self.filtered = self
+            .branches
             .iter()
             .filter(|b| b.name.to_lowercase().contains(&query))
             .cloned()
@@ -377,7 +393,8 @@ impl WorktreeConfig {
     pub fn worktree_path(&self, repo_name: &str, branch_name: &str) -> PathBuf {
         // Sanitize branch name for filesystem (replace / with -)
         let safe_branch = branch_name.replace('/', "-");
-        self.worktree_dir.join(format!("{}-{}", repo_name, safe_branch))
+        self.worktree_dir
+            .join(format!("{}-{}", repo_name, safe_branch))
     }
 }
 
@@ -395,7 +412,12 @@ pub struct ClickRegion {
 
 impl ClickRegion {
     pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn contains(&self, x: u16, y: u16) -> bool {
@@ -502,33 +524,33 @@ impl App {
 
     /// Move attachment selection left
     pub fn attachment_left(&mut self) {
-        if let Some(idx) = self.selected_attachment {
-            if idx > 0 {
-                self.selected_attachment = Some(idx - 1);
-            }
+        if let Some(idx) = self.selected_attachment
+            && idx > 0
+        {
+            self.selected_attachment = Some(idx - 1);
         }
     }
 
     /// Move attachment selection right
     pub fn attachment_right(&mut self) {
-        if let Some(idx) = self.selected_attachment {
-            if idx + 1 < self.attachments.len() {
-                self.selected_attachment = Some(idx + 1);
-            }
+        if let Some(idx) = self.selected_attachment
+            && idx + 1 < self.attachments.len()
+        {
+            self.selected_attachment = Some(idx + 1);
         }
     }
 
     /// Delete the currently selected attachment
     pub fn delete_selected_attachment(&mut self) {
-        if let Some(idx) = self.selected_attachment {
-            if idx < self.attachments.len() {
-                self.attachments.remove(idx);
-                // Adjust selection
-                if self.attachments.is_empty() {
-                    self.selected_attachment = None;
-                } else if idx >= self.attachments.len() {
-                    self.selected_attachment = Some(self.attachments.len() - 1);
-                }
+        if let Some(idx) = self.selected_attachment
+            && idx < self.attachments.len()
+        {
+            self.attachments.remove(idx);
+            // Adjust selection
+            if self.attachments.is_empty() {
+                self.selected_attachment = None;
+            } else if idx >= self.attachments.len() {
+                self.selected_attachment = Some(self.attachments.len() - 1);
             }
         }
     }
@@ -565,26 +587,25 @@ impl App {
 
     /// Enter into a subdirectory
     pub fn folder_picker_enter_dir(&mut self) -> bool {
-        if let Some(picker) = &mut self.folder_picker {
-            if let Some(entry) = picker.entries.get(picker.selected) {
-                if !entry.is_parent {
-                    picker.current_dir = entry.path.clone();
-                    picker.selected = 0;
-                    return true; // Signal to rescan
-                }
-            }
+        if let Some(picker) = &mut self.folder_picker
+            && let Some(entry) = picker.entries.get(picker.selected)
+            && !entry.is_parent
+        {
+            picker.current_dir = entry.path.clone();
+            picker.selected = 0;
+            return true; // Signal to rescan
         }
         false
     }
 
     /// Go to parent directory
     pub fn folder_picker_go_up(&mut self) -> bool {
-        if let Some(picker) = &mut self.folder_picker {
-            if let Some(parent) = picker.current_dir.parent() {
-                picker.current_dir = parent.to_path_buf();
-                picker.selected = 0;
-                return true; // Signal to rescan
-            }
+        if let Some(picker) = &mut self.folder_picker
+            && let Some(parent) = picker.current_dir.parent()
+        {
+            picker.current_dir = parent.to_path_buf();
+            picker.selected = 0;
+            return true; // Signal to rescan
         }
         false
     }
@@ -716,7 +737,12 @@ impl App {
     }
 
     /// Spawn a new session and return its unique ID
-    pub fn spawn_session(&mut self, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> String {
+    pub fn spawn_session(
+        &mut self,
+        agent_type: AgentType,
+        cwd: PathBuf,
+        is_worktree: bool,
+    ) -> String {
         let name = cwd
             .file_name()
             .and_then(|n| n.to_str())
@@ -789,7 +815,8 @@ impl App {
         if self.cursor_position < self.input_buffer.len() {
             // Find the next char boundary
             let mut new_pos = self.cursor_position + 1;
-            while new_pos < self.input_buffer.len() && !self.input_buffer.is_char_boundary(new_pos) {
+            while new_pos < self.input_buffer.len() && !self.input_buffer.is_char_boundary(new_pos)
+            {
                 new_pos += 1;
             }
             self.cursor_position = new_pos;

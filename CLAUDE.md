@@ -7,20 +7,36 @@ A terminal multiplexer for AI coding agents. Manages multiple agent sessions in 
 ```
 src/
 ├── main.rs          # Entry point, event loop, key handling
-├── app.rs           # App state, input modes, folder picker
+├── app.rs           # App state, input modes, picker state
+├── clipboard.rs     # System clipboard integration (text & images)
+├── config.rs        # Configuration file support (~/.config/amux/config.toml)
+├── git.rs           # Git operations (worktrees, branches)
 ├── log.rs           # Debug logging to ~/.amux/logs/
+├── scroll.rs        # Scroll event debouncing
 ├── acp/             # Agent Client Protocol implementation
 │   ├── mod.rs       # Module exports
 │   ├── protocol.rs  # ACP types and message parsing
 │   └── client.rs    # Agent connection, event handling
+├── events/          # Event handling (Action-based architecture)
+│   ├── mod.rs       # Module exports
+│   ├── action.rs    # Action enum for state changes
+│   ├── handler.rs   # Central event handler
+│   ├── keyboard.rs  # Keyboard event handling by mode
+│   └── mouse.rs     # Mouse event handling
+├── picker/          # Generic picker UI components
+│   ├── mod.rs       # Module exports
+│   └── traits.rs    # PickerItem trait for picker entries
 ├── session/         # Session management
-│   ├── mod.rs
+│   ├── mod.rs       # Module exports
 │   ├── state.rs     # Session state, permission handling
-│   └── manager.rs   # Session list management
+│   ├── manager.rs   # Session list management
+│   └── scanner.rs   # Session discovery (existing agent sessions)
 └── tui/             # Terminal UI
-    ├── mod.rs
+    ├── mod.rs       # Module exports
     ├── ui.rs        # Layout and rendering
-    └── theme.rs     # Colors and styling
+    ├── theme.rs     # Colors and styling
+    └── components/  # UI component organization
+        └── mod.rs   # Re-exports render functions
 ```
 
 ## Agent Client Protocol (ACP)

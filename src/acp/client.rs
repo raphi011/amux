@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use serde_json::Value;
 
-use super::protocol::{*, AskUserRequestParams, AskUserOption, AskUserResponse};
+use super::protocol::{AskUserOption, AskUserRequestParams, AskUserResponse, *};
 use crate::log;
 use crate::session::AgentType;
 
@@ -117,11 +117,11 @@ impl AgentConnection {
         // Spawn read task
         let event_tx_clone = event_tx.clone();
         let response_tx = tx.clone(); // For sending responses to fs/terminal requests
-        
+
         // Shared state for terminals - allows concurrent command execution
         let terminals: Terminals = Arc::new(Mutex::new(HashMap::new()));
         let terminal_counter: TerminalCounter = Arc::new(Mutex::new(0));
-        
+
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -144,21 +144,27 @@ impl AgentConnection {
                                 .await;
                         } else if let Some(result) = resp.result {
                             // Try to parse as different result types
-                            if let Ok(init) = serde_json::from_value::<InitializeResult>(result.clone()) {
+                            if let Ok(init) =
+                                serde_json::from_value::<InitializeResult>(result.clone())
+                            {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::Initialized {
                                         agent_info: init.agent_info,
                                         agent_capabilities: init.agent_capabilities,
                                     })
                                     .await;
-                            } else if let Ok(session) = serde_json::from_value::<NewSessionResult>(result.clone()) {
+                            } else if let Ok(session) =
+                                serde_json::from_value::<NewSessionResult>(result.clone())
+                            {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::SessionCreated {
                                         session_id: session.session_id,
                                         models: session.models,
                                     })
                                     .await;
-                            } else if let Ok(prompt) = serde_json::from_value::<PromptResult>(result.clone()) {
+                            } else if let Ok(prompt) =
+                                serde_json::from_value::<PromptResult>(result.clone())
+                            {
                                 let _ = event_tx_clone
                                     .send(AgentEvent::PromptComplete {
                                         stop_reason: prompt.stop_reason,
@@ -181,39 +187,45 @@ impl AgentConnection {
                         }
                     }
                     Ok(IncomingMessage::Notification { method, params }) => {
-                        if method == "session/update" {
-                            if let Some(params) = params {
-                                // Log tool_call updates to dedicated tools log
-                                if let Some(update) = params.get("update") {
-                                    if update.get("sessionUpdate").and_then(|s| s.as_str()) == Some("tool_call") {
-                                        let tool_name = update.get("title")
-                                            .and_then(|t| t.as_str())
-                                            .unwrap_or("unknown");
-                                        log::log_tool_json(tool_name, update);
-                                    }
-                                }
+                        if method == "session/update"
+                            && let Some(params) = params
+                        {
+                            // Log tool_call updates to dedicated tools log
+                            if let Some(update) = params.get("update")
+                                && update.get("sessionUpdate").and_then(|s| s.as_str())
+                                    == Some("tool_call")
+                            {
+                                let tool_name = update
+                                    .get("title")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("unknown");
+                                log::log_tool_json(tool_name, update);
+                            }
 
-                                match serde_json::from_value::<SessionUpdateParams>(params.clone()) {
-                                    Ok(update_params) => {
-                                        let _ = event_tx_clone
-                                            .send(AgentEvent::Update {
-                                                session_id: update_params.session_id,
-                                                update: update_params.update,
-                                            })
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        // Log parse error with raw JSON for debugging
-                                        let update_type = params.get("update")
-                                            .and_then(|u| u.get("sessionUpdate"))
-                                            .and_then(|s| s.as_str())
-                                            .unwrap_or("unknown");
-                                        let _ = event_tx_clone
-                                            .send(AgentEvent::Error {
-                                                message: format!("Failed to parse session update '{}': {}", update_type, e),
-                                            })
-                                            .await;
-                                    }
+                            match serde_json::from_value::<SessionUpdateParams>(params.clone()) {
+                                Ok(update_params) => {
+                                    let _ = event_tx_clone
+                                        .send(AgentEvent::Update {
+                                            session_id: update_params.session_id,
+                                            update: update_params.update,
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    // Log parse error with raw JSON for debugging
+                                    let update_type = params
+                                        .get("update")
+                                        .and_then(|u| u.get("sessionUpdate"))
+                                        .and_then(|s| s.as_str())
+                                        .unwrap_or("unknown");
+                                    let _ = event_tx_clone
+                                        .send(AgentEvent::Error {
+                                            message: format!(
+                                                "Failed to parse session update '{}': {}",
+                                                update_type, e
+                                            ),
+                                        })
+                                        .await;
                                 }
                             }
                         }
@@ -242,7 +254,10 @@ impl AgentConnection {
                                     Err(e) => {
                                         let _ = event_tx_clone
                                             .send(AgentEvent::Error {
-                                                message: format!("Permission parse error: {} - params: {:?}", e, params),
+                                                message: format!(
+                                                    "Permission parse error: {} - params: {:?}",
+                                                    e, params
+                                                ),
                                             })
                                             .await;
                                     }
@@ -251,7 +266,8 @@ impl AgentConnection {
                         } else if method == "session/ask_user" {
                             // Handle ask_user request (Claude Code extension)
                             if let Some(params) = params {
-                                match serde_json::from_value::<AskUserRequestParams>(params.clone()) {
+                                match serde_json::from_value::<AskUserRequestParams>(params.clone())
+                                {
                                     Ok(ask_req) => {
                                         log::log_event(&format!(
                                             "Ask user request: question={:?}, options={}",
@@ -271,7 +287,10 @@ impl AgentConnection {
                                     Err(e) => {
                                         let _ = event_tx_clone
                                             .send(AgentEvent::Error {
-                                                message: format!("Ask user parse error: {} - params: {:?}", e, params),
+                                                message: format!(
+                                                    "Ask user parse error: {} - params: {:?}",
+                                                    e, params
+                                                ),
                                             })
                                             .await;
                                     }
@@ -280,16 +299,29 @@ impl AgentConnection {
                         } else if method == "fs/read_text_file" {
                             // Handle file read request
                             if let Some(params) = params {
-                                match serde_json::from_value::<FsReadTextFileParams>(params.clone()) {
+                                match serde_json::from_value::<FsReadTextFileParams>(params.clone())
+                                {
                                     Ok(fs_params) => {
                                         // Read the file
-                                        let result = match tokio::fs::read_to_string(&fs_params.path).await {
+                                        let result = match tokio::fs::read_to_string(
+                                            &fs_params.path,
+                                        )
+                                        .await
+                                        {
                                             Ok(mut content) => {
                                                 // Apply line/limit if specified
-                                                if fs_params.line.is_some() || fs_params.limit.is_some() {
-                                                    let lines: Vec<&str> = content.lines().collect();
-                                                    let start = fs_params.line.unwrap_or(1).saturating_sub(1) as usize;
-                                                    let limit = fs_params.limit.unwrap_or(u32::MAX) as usize;
+                                                if fs_params.line.is_some()
+                                                    || fs_params.limit.is_some()
+                                                {
+                                                    let lines: Vec<&str> =
+                                                        content.lines().collect();
+                                                    let start = fs_params
+                                                        .line
+                                                        .unwrap_or(1)
+                                                        .saturating_sub(1)
+                                                        as usize;
+                                                    let limit = fs_params.limit.unwrap_or(u32::MAX)
+                                                        as usize;
                                                     let end = (start + limit).min(lines.len());
                                                     content = lines[start..end].join("\n");
                                                 }
@@ -313,7 +345,8 @@ impl AgentConnection {
                                                 })
                                             }
                                         };
-                                        let json = serde_json::to_string(&result).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&result).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                     Err(e) => {
@@ -326,7 +359,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -334,12 +368,20 @@ impl AgentConnection {
                         } else if method == "fs/write_text_file" {
                             // Handle file write request
                             if let Some(params) = params {
-                                match serde_json::from_value::<FsWriteTextFileParams>(params.clone()) {
+                                match serde_json::from_value::<FsWriteTextFileParams>(
+                                    params.clone(),
+                                ) {
                                     Ok(fs_params) => {
                                         // Read old content for diff (if file exists)
-                                        let old_content = tokio::fs::read_to_string(&fs_params.path).await.ok();
+                                        let old_content =
+                                            tokio::fs::read_to_string(&fs_params.path).await.ok();
 
-                                        let result = match tokio::fs::write(&fs_params.path, &fs_params.content).await {
+                                        let result = match tokio::fs::write(
+                                            &fs_params.path,
+                                            &fs_params.content,
+                                        )
+                                        .await
+                                        {
                                             Ok(()) => {
                                                 // Generate and send diff
                                                 let diff = generate_diff(
@@ -347,11 +389,13 @@ impl AgentConnection {
                                                     &fs_params.content,
                                                     &fs_params.path,
                                                 );
-                                                let _ = event_tx_clone.send(AgentEvent::FileWritten {
-                                                    session_id: fs_params.session_id.clone(),
-                                                    path: fs_params.path.clone(),
-                                                    diff,
-                                                }).await;
+                                                let _ = event_tx_clone
+                                                    .send(AgentEvent::FileWritten {
+                                                        session_id: fs_params.session_id.clone(),
+                                                        path: fs_params.path.clone(),
+                                                        diff,
+                                                    })
+                                                    .await;
 
                                                 serde_json::json!({
                                                     "jsonrpc": "2.0",
@@ -370,7 +414,8 @@ impl AgentConnection {
                                                 })
                                             }
                                         };
-                                        let json = serde_json::to_string(&result).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&result).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                     Err(e) => {
@@ -382,7 +427,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -390,7 +436,8 @@ impl AgentConnection {
                         } else if method == "terminal/create" {
                             // Handle terminal create request
                             if let Some(params) = params {
-                                match serde_json::from_value::<TerminalCreateParams>(params.clone()) {
+                                match serde_json::from_value::<TerminalCreateParams>(params.clone())
+                                {
                                     Ok(term_params) => {
                                         // Assign terminal ID immediately
                                         let terminal_id = {
@@ -402,11 +449,14 @@ impl AgentConnection {
                                         // Insert placeholder terminal (command running)
                                         {
                                             let mut terms = terminals.lock().await;
-                                            terms.insert(terminal_id.clone(), Terminal {
-                                                output: String::new(),
-                                                exit_code: None,
-                                                child: None,
-                                            });
+                                            terms.insert(
+                                                terminal_id.clone(),
+                                                Terminal {
+                                                    output: String::new(),
+                                                    exit_code: None,
+                                                    child: None,
+                                                },
+                                            );
                                         }
 
                                         // Respond immediately with terminal ID
@@ -418,18 +468,25 @@ impl AgentConnection {
                                                 "terminalId": terminal_id.clone()
                                             }
                                         });
-                                        let json = serde_json::to_string(&result).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&result).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
 
                                         // Build the full command with args
                                         let full_command = if term_params.args.is_empty() {
                                             term_params.command.clone()
                                         } else {
-                                            format!("{} {}", term_params.command, term_params.args.join(" "))
+                                            format!(
+                                                "{} {}",
+                                                term_params.command,
+                                                term_params.args.join(" ")
+                                            )
                                         };
 
                                         let cwd = term_params.cwd.clone();
-                                        let env_vars: Vec<_> = term_params.env.iter()
+                                        let env_vars: Vec<_> = term_params
+                                            .env
+                                            .iter()
                                             .map(|e| (e.name.clone(), e.value.clone()))
                                             .collect();
                                         let output_limit = term_params.output_byte_limit;
@@ -455,17 +512,24 @@ impl AgentConnection {
 
                                             // Update terminal with results
                                             let mut terms = terminals_clone.lock().await;
-                                            if let Some(terminal) = terms.get_mut(&terminal_id_clone) {
+                                            if let Some(terminal) =
+                                                terms.get_mut(&terminal_id_clone)
+                                            {
                                                 match result {
                                                     Ok(output) => {
-                                                        let mut out = String::from_utf8_lossy(&output.stdout).to_string();
-                                                        out.push_str(&String::from_utf8_lossy(&output.stderr));
+                                                        let mut out =
+                                                            String::from_utf8_lossy(&output.stdout)
+                                                                .to_string();
+                                                        out.push_str(&String::from_utf8_lossy(
+                                                            &output.stderr,
+                                                        ));
 
                                                         // Apply output byte limit if specified
-                                                        if let Some(limit) = output_limit {
-                                                            if out.len() > limit {
-                                                                out = out[out.len() - limit..].to_string();
-                                                            }
+                                                        if let Some(limit) = output_limit
+                                                            && out.len() > limit
+                                                        {
+                                                            out = out[out.len() - limit..]
+                                                                .to_string();
                                                         }
 
                                                         terminal.output = out;
@@ -488,7 +552,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -496,10 +561,12 @@ impl AgentConnection {
                         } else if method == "terminal/output" {
                             // Handle terminal output request
                             if let Some(params) = params {
-                                match serde_json::from_value::<TerminalOutputParams>(params.clone()) {
+                                match serde_json::from_value::<TerminalOutputParams>(params.clone())
+                                {
                                     Ok(term_params) => {
                                         let terms = terminals.lock().await;
-                                        if let Some(terminal) = terms.get(&term_params.terminal_id) {
+                                        if let Some(terminal) = terms.get(&term_params.terminal_id)
+                                        {
                                             let result = serde_json::json!({
                                                 "jsonrpc": "2.0",
                                                 "id": id,
@@ -509,7 +576,8 @@ impl AgentConnection {
                                                     "exitCode": terminal.exit_code,
                                                 }
                                             });
-                                            let json = serde_json::to_string(&result).unwrap_or_default();
+                                            let json =
+                                                serde_json::to_string(&result).unwrap_or_default();
                                             drop(terms); // Release lock before await
                                             let _ = response_tx.send(json).await;
                                         } else {
@@ -522,7 +590,8 @@ impl AgentConnection {
                                                     "message": "Terminal not found"
                                                 }
                                             });
-                                            let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                            let json = serde_json::to_string(&error_resp)
+                                                .unwrap_or_default();
                                             let _ = response_tx.send(json).await;
                                         }
                                     }
@@ -535,7 +604,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -550,7 +620,7 @@ impl AgentConnection {
                                         let start = std::time::Instant::now();
                                         let terminal_id = term_params.terminal_id.clone();
                                         let terminals_clone = Arc::clone(&terminals);
-                                        
+
                                         // Poll for completion
                                         loop {
                                             let terms = terminals_clone.lock().await;
@@ -566,7 +636,8 @@ impl AgentConnection {
                                                             "timedOut": false,
                                                         }
                                                     });
-                                                    let json = serde_json::to_string(&result).unwrap_or_default();
+                                                    let json = serde_json::to_string(&result)
+                                                        .unwrap_or_default();
                                                     drop(terms);
                                                     let _ = response_tx.send(json).await;
                                                     break;
@@ -581,12 +652,13 @@ impl AgentConnection {
                                                         "message": "Terminal not found"
                                                     }
                                                 });
-                                                let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                                let json = serde_json::to_string(&error_resp)
+                                                    .unwrap_or_default();
                                                 let _ = response_tx.send(json).await;
                                                 break;
                                             }
                                             drop(terms);
-                                            
+
                                             // Check timeout
                                             if start.elapsed().as_millis() as u64 > timeout_ms {
                                                 let result = serde_json::json!({
@@ -598,13 +670,17 @@ impl AgentConnection {
                                                         "timedOut": true,
                                                     }
                                                 });
-                                                let json = serde_json::to_string(&result).unwrap_or_default();
+                                                let json = serde_json::to_string(&result)
+                                                    .unwrap_or_default();
                                                 let _ = response_tx.send(json).await;
                                                 break;
                                             }
-                                            
+
                                             // Wait a bit before polling again
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                50,
+                                            ))
+                                            .await;
                                         }
                                     }
                                     Err(e) => {
@@ -616,7 +692,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -634,7 +711,8 @@ impl AgentConnection {
                                             "id": id,
                                             "result": {}
                                         });
-                                        let json = serde_json::to_string(&result).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&result).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                     Err(e) => {
@@ -646,7 +724,8 @@ impl AgentConnection {
                                                 "message": format!("Invalid params: {}", e)
                                             }
                                         });
-                                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                                        let json =
+                                            serde_json::to_string(&error_resp).unwrap_or_default();
                                         let _ = response_tx.send(json).await;
                                     }
                                 }
@@ -760,16 +839,17 @@ impl AgentConnection {
 
         let id = self.next_id();
         self.current_prompt_id = Some(id);
-        let request = JsonRpcRequest::new(
-            id,
-            "session/prompt",
-            Some(serde_json::to_value(params)?),
-        );
+        let request =
+            JsonRpcRequest::new(id, "session/prompt", Some(serde_json::to_value(params)?));
         self.send(request).await
     }
 
     /// Send a prompt with arbitrary content blocks (text, images, etc.)
-    pub async fn prompt_with_content(&mut self, session_id: &str, content: Vec<ContentBlock>) -> Result<()> {
+    pub async fn prompt_with_content(
+        &mut self,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<()> {
         let params = PromptParams {
             session_id: session_id.to_string(),
             prompt: content,
@@ -777,11 +857,8 @@ impl AgentConnection {
 
         let id = self.next_id();
         self.current_prompt_id = Some(id);
-        let request = JsonRpcRequest::new(
-            id,
-            "session/prompt",
-            Some(serde_json::to_value(params)?),
-        );
+        let request =
+            JsonRpcRequest::new(id, "session/prompt", Some(serde_json::to_value(params)?));
         self.send(request).await
     }
 
@@ -803,7 +880,11 @@ impl AgentConnection {
     }
 
     /// Respond to a permission request
-    pub async fn respond_permission(&mut self, request_id: u64, option_id: Option<PermissionOptionId>) -> Result<()> {
+    pub async fn respond_permission(
+        &mut self,
+        request_id: u64,
+        option_id: Option<PermissionOptionId>,
+    ) -> Result<()> {
         let result = match option_id {
             Some(id) => RequestPermissionResponse::selected(id),
             None => RequestPermissionResponse::cancelled(),
@@ -821,7 +902,11 @@ impl AgentConnection {
     }
 
     /// Respond to an ask_user request
-    pub async fn respond_ask_user(&mut self, request_id: u64, response: AskUserResponse) -> Result<()> {
+    pub async fn respond_ask_user(
+        &mut self,
+        request_id: u64,
+        response: AskUserResponse,
+    ) -> Result<()> {
         let rpc_response = serde_json::json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -880,7 +965,11 @@ fn generate_diff(old: &str, new: &str, _path: &str) -> String {
             let (sign, old_line, new_line) = match change.tag() {
                 ChangeTag::Delete => ('-', change.old_index().map(|i| i + 1), None),
                 ChangeTag::Insert => ('+', None, change.new_index().map(|i| i + 1)),
-                ChangeTag::Equal => (' ', change.old_index().map(|i| i + 1), change.new_index().map(|i| i + 1)),
+                ChangeTag::Equal => (
+                    ' ',
+                    change.old_index().map(|i| i + 1),
+                    change.new_index().map(|i| i + 1),
+                ),
             };
 
             // Format line numbers: "old new" or spaces for missing

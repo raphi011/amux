@@ -65,7 +65,8 @@ pub trait Picker {
     /// Select the previous item (wraps around)
     fn select_prev(&mut self) {
         if !self.is_empty() {
-            let prev = self.selected_index()
+            let prev = self
+                .selected_index()
                 .checked_sub(1)
                 .unwrap_or(self.len() - 1);
             self.set_selected_index(prev);

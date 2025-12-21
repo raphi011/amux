@@ -1,6 +1,6 @@
-use std::path::Path;
-use anyhow::{Result, bail};
 use crate::app::BranchEntry;
+use anyhow::{Result, bail};
+use std::path::Path;
 
 /// List all branches (local and remote) for a git repository
 pub async fn list_branches(repo_path: &Path) -> Result<Vec<BranchEntry>> {
@@ -66,7 +66,11 @@ pub async fn list_branches(repo_path: &Path) -> Result<Vec<BranchEntry>> {
 /// Check if a branch exists locally
 pub async fn branch_exists(repo_path: &Path, branch_name: &str) -> Result<bool> {
     let output = tokio::process::Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch_name)])
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", branch_name),
+        ])
         .current_dir(repo_path)
         .output()
         .await?;
@@ -79,7 +83,11 @@ pub async fn remote_branch_exists(repo_path: &Path, branch_name: &str) -> Result
     // Check common remotes
     for remote in &["origin", "upstream"] {
         let output = tokio::process::Command::new("git")
-            .args(["rev-parse", "--verify", &format!("refs/remotes/{}/{}", remote, branch_name)])
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/remotes/{}/{}", remote, branch_name),
+            ])
             .current_dir(repo_path)
             .output()
             .await?;
@@ -103,7 +111,8 @@ pub async fn create_worktree(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let worktree_str = worktree_path.to_str()
+    let worktree_str = worktree_path
+        .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
 
     let output = if create_branch {
@@ -285,7 +294,8 @@ pub async fn get_default_branch(repo_path: &Path) -> Result<String> {
 
 /// Remove a git worktree
 pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
-    let worktree_str = worktree_path.to_str()
+    let worktree_str = worktree_path
+        .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid worktree path"))?;
 
     let mut args = vec!["worktree", "remove", worktree_str];

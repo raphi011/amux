@@ -1,17 +1,23 @@
 mod acp;
 mod app;
 mod clipboard;
+mod config;
+mod events;
 mod git;
 mod log;
 mod picker;
+mod scroll;
 mod session;
 mod tui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyCode, KeyEventKind, KeyModifiers, EventStream, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, MouseEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt;
 use ratatui::prelude::*;
@@ -20,11 +26,21 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use acp::{AgentConnection, AgentEvent, SessionUpdate, PermissionOptionId, ContentBlock, AskUserResponse};
-use app::{App, FolderEntry, InputMode, ImageAttachment, WorktreeConfig, WorktreeEntry, CleanupEntry};
+use acp::{
+    AgentConnection, AgentEvent, AskUserResponse, ContentBlock, PermissionOptionId, SessionUpdate,
+};
+use app::{
+    App, CleanupEntry, FolderEntry, ImageAttachment, InputMode, WorktreeConfig, WorktreeEntry,
+};
 use clipboard::ClipboardContent;
+// Events module provides Action-based event handling infrastructure
+// (will be incrementally integrated to replace inline event handling)
+#[allow(unused_imports)]
+use events::Action;
 use picker::Picker;
-use session::{AgentType, OutputType, SessionState, PendingPermission, PendingQuestion, PermissionMode};
+use session::{
+    AgentType, OutputType, PendingPermission, PendingQuestion, PermissionMode, SessionState,
+};
 
 /// Get the current git branch for a directory
 async fn get_git_branch(cwd: &std::path::Path) -> String {
@@ -74,10 +90,18 @@ fn format_agent_capabilities(caps: &serde_json::Value) -> String {
     // Prompt capabilities
     if let Some(prompt) = caps.get("promptCapabilities") {
         let mut prompt_features = vec![];
-        if prompt.get("embeddedContext").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if prompt
+            .get("embeddedContext")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             prompt_features.push("embedded context");
         }
-        if prompt.get("image").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if prompt
+            .get("image")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             prompt_features.push("images");
         }
         if !prompt_features.is_empty() {
@@ -121,13 +145,13 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
     if let Ok(mut read_dir) = tokio::fs::read_dir(dir).await {
         let mut dirs = vec![];
         while let Ok(Some(entry)) = read_dir.next_entry().await {
-            if let Ok(file_type) = entry.file_type().await {
-                if file_type.is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    // Skip hidden directories
-                    if !name.starts_with('.') {
-                        dirs.push((name, entry.path()));
-                    }
+            if let Ok(file_type) = entry.file_type().await
+                && file_type.is_dir()
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip hidden directories
+                if !name.starts_with('.') {
+                    dirs.push((name, entry.path()));
                 }
             }
         }
@@ -167,14 +191,14 @@ async fn scan_worktrees(worktree_dir: &std::path::Path, fetch_first: bool) -> Ve
     if let Ok(mut read_dir) = tokio::fs::read_dir(worktree_dir).await {
         let mut worktree_paths = vec![];
         while let Ok(Some(entry)) = read_dir.next_entry().await {
-            if let Ok(file_type) = entry.file_type().await {
-                if file_type.is_dir() {
-                    let path = entry.path();
-                    // Only include if it looks like a git worktree (has .git file or directory)
-                    let git_path = path.join(".git");
-                    if git_path.exists() {
-                        worktree_paths.push(path);
-                    }
+            if let Ok(file_type) = entry.file_type().await
+                && file_type.is_dir()
+            {
+                let path = entry.path();
+                // Only include if it looks like a git worktree (has .git file or directory)
+                let git_path = path.join(".git");
+                if git_path.exists() {
+                    worktree_paths.push(path);
                 }
             }
         }
@@ -183,12 +207,15 @@ async fn scan_worktrees(worktree_dir: &std::path::Path, fetch_first: bool) -> Ve
         if fetch_first {
             let mut fetched_repos = std::collections::HashSet::new();
             for path in &worktree_paths {
-                if let Some(parent_repo) = get_worktree_parent_repo(path).await {
-                    if fetched_repos.insert(parent_repo.clone()) {
-                        log::log(&format!("Fetching from origin in {}", parent_repo.display()));
-                        if let Err(e) = git::fetch_origin(&parent_repo).await {
-                            log::log(&format!("Failed to fetch: {}", e));
-                        }
+                if let Some(parent_repo) = get_worktree_parent_repo(path).await
+                    && fetched_repos.insert(parent_repo.clone())
+                {
+                    log::log(&format!(
+                        "Fetching from origin in {}",
+                        parent_repo.display()
+                    ));
+                    if let Err(e) = git::fetch_origin(&parent_repo).await {
+                        log::log(&format!("Failed to fetch: {}", e));
                     }
                 }
             }
@@ -197,7 +224,8 @@ async fn scan_worktrees(worktree_dir: &std::path::Path, fetch_first: bool) -> Ve
         // Now get status for each worktree
         let mut worktrees = vec![];
         for path in worktree_paths {
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let is_clean = git::is_worktree_clean(&path).await.unwrap_or(false);
@@ -274,17 +302,34 @@ async fn get_worktree_merged_status(worktree_path: &std::path::Path) -> bool {
     // The parent repo is one level up from the .git directory
     let parent_repo = common_dir.parent().unwrap_or(&common_dir);
 
-    git::is_branch_merged(parent_repo, &branch).await.unwrap_or(false)
+    git::is_branch_merged(parent_repo, &branch)
+        .await
+        .unwrap_or(false)
 }
 
 /// Command to send to an agent
 enum AgentCommand {
-    Prompt { session_id: String, text: String },
-    PromptWithContent { session_id: String, content: Vec<ContentBlock> },
-    PermissionResponse { request_id: u64, option_id: Option<PermissionOptionId> },
-    AskUserResponse { request_id: u64, answer: String },
+    Prompt {
+        session_id: String,
+        text: String,
+    },
+    PromptWithContent {
+        session_id: String,
+        content: Vec<ContentBlock>,
+    },
+    PermissionResponse {
+        request_id: u64,
+        option_id: Option<PermissionOptionId>,
+    },
+    AskUserResponse {
+        request_id: u64,
+        answer: String,
+    },
     CancelPrompt,
-    SetModel { session_id: String, model_id: String },
+    SetModel {
+        session_id: String,
+        model_id: String,
+    },
 }
 
 /// Info for resuming a session
@@ -331,7 +376,10 @@ async fn main() -> Result<()> {
                 if path.is_dir() {
                     start_dir = path.canonicalize().unwrap_or(path);
                 } else {
-                    eprintln!("Warning: '{}' is not a valid directory, using current directory", arg);
+                    eprintln!(
+                        "Warning: '{}' is not a valid directory, using current directory",
+                        arg
+                    );
                 }
             }
             _ => {
@@ -347,7 +395,12 @@ async fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -359,7 +412,12 @@ async fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -459,8 +517,8 @@ where
 
                                 // Check if click is on model selector
                                 if app.click_areas.model_selector.contains(x, y) {
-                                    if let Some(session) = app.sessions.selected_session_mut() {
-                                        if let Some(model_id) = session.cycle_model() {
+                                    if let Some(session) = app.sessions.selected_session_mut()
+                                        && let Some(model_id) = session.cycle_model() {
                                             let local_id = session.id.clone();
                                             let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
                                             if let Some(cmd_tx) = agent_commands.get(&local_id) {
@@ -470,7 +528,6 @@ where
                                                 }).await;
                                             }
                                         }
-                                    }
                                     continue;
                                 }
 
@@ -487,8 +544,8 @@ where
                     }
 
                     // Handle key events
-                    if let Event::Key(key) = event {
-                    if key.kind == KeyEventKind::Press {
+                    if let Event::Key(key) = event
+                    && key.kind == KeyEventKind::Press {
                         match app.input_mode {
                             InputMode::Normal => {
                                 // Check if there's a pending permission request
@@ -506,8 +563,8 @@ where
                                     match key.code {
                                         KeyCode::Char('y') | KeyCode::Enter => {
                                             // Allow - select the first allow_once option
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(perm) = &session.pending_permission {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(perm) = &session.pending_permission {
                                                     let option_id = perm.selected_option()
                                                         .or_else(|| perm.allow_once_option())
                                                         .map(|o| PermissionOptionId::from(o.option_id.clone()));
@@ -527,12 +584,11 @@ where
                                                         app.cursor_position = cursor;
                                                     }
                                                 }
-                                            }
                                         }
                                         KeyCode::Char('n') | KeyCode::Esc => {
                                             // Reject/Cancel
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(perm) = &session.pending_permission {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(perm) = &session.pending_permission {
                                                     let request_id = perm.request_id;
                                                     let session_id = session.id.clone();
                                                     if let Some(cmd_tx) = agent_commands.get(&session_id) {
@@ -549,23 +605,20 @@ where
                                                         app.cursor_position = cursor;
                                                     }
                                                 }
-                                            }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => {
                                             let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                                if let Some(perm) = &mut session.pending_permission {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                                                && let Some(perm) = &mut session.pending_permission {
                                                     perm.select_next();
                                                 }
-                                            }
                                         }
                                         KeyCode::Char('k') | KeyCode::Up => {
                                             let session_idx = app.sessions.selected_index();
-                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                                if let Some(perm) = &mut session.pending_permission {
+                                            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                                                && let Some(perm) = &mut session.pending_permission {
                                                     perm.select_prev();
                                                 }
-                                            }
                                         }
                                         _ => {}
                                     }
@@ -574,8 +627,8 @@ where
                                     match key.code {
                                         KeyCode::Enter => {
                                             // Submit answer
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &session.pending_question {
                                                     let answer = question.get_answer();
                                                     let request_id = question.request_id;
                                                     let session_id = session.id.clone();
@@ -593,12 +646,11 @@ where
                                                         app.cursor_position = cursor;
                                                     }
                                                 }
-                                            }
                                         }
                                         KeyCode::Esc => {
                                             // Cancel - send empty response
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &session.pending_question {
                                                     let request_id = question.request_id;
                                                     let session_id = session.id.clone();
                                                     if let Some(cmd_tx) = agent_commands.get(&session_id) {
@@ -615,77 +667,65 @@ where
                                                         app.cursor_position = cursor;
                                                     }
                                                 }
-                                            }
                                         }
                                         KeyCode::Char(c) => {
                                             // Type into input
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_char(c);
                                                 }
-                                            }
                                         }
                                         KeyCode::Backspace => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_backspace();
                                                 }
-                                            }
                                         }
                                         KeyCode::Delete => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_delete();
                                                 }
-                                            }
                                         }
                                         KeyCode::Left => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_left();
                                                 }
-                                            }
                                         }
                                         KeyCode::Right => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_right();
                                                 }
-                                            }
                                         }
                                         KeyCode::Home => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_home();
                                                 }
-                                            }
                                         }
                                         KeyCode::End => {
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question {
                                                     question.input_end();
                                                 }
-                                            }
                                         }
                                         KeyCode::Up => {
                                             // Navigate options if available
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
-                                                    if !question.is_free_text() {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question
+                                                    && !question.is_free_text() {
                                                         question.select_prev();
                                                     }
-                                                }
-                                            }
                                         }
                                         KeyCode::Down => {
                                             // Navigate options if available
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(question) = &mut session.pending_question {
-                                                    if !question.is_free_text() {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(question) = &mut session.pending_question
+                                                    && !question.is_free_text() {
                                                         question.select_next();
                                                     }
-                                                }
-                                            }
                                         }
                                         KeyCode::Tab => {
                                             // Cycle permission mode even when answering questions
@@ -704,8 +744,8 @@ where
                                         }
                                         KeyCode::Esc => {
                                             // Cancel current prompt if session is working
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if session.state == SessionState::Prompting {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && session.state == SessionState::Prompting {
                                                     let session_id = session.id.clone();
                                                     if let Some(cmd_tx) = agent_commands.get(&session_id) {
                                                         let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
@@ -713,7 +753,6 @@ where
                                                     session.add_output("⚠ Cancelled".to_string(), OutputType::Text);
                                                     session.state = SessionState::Idle;
                                                 }
-                                            }
                                         }
                                         KeyCode::Tab => {
                                             // Cycle permission mode for selected session
@@ -723,8 +762,8 @@ where
                                         }
                                         KeyCode::Char('m') => {
                                             // Cycle model for selected session
-                                            if let Some(session) = app.sessions.selected_session_mut() {
-                                                if let Some(model_id) = session.cycle_model() {
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && let Some(model_id) = session.cycle_model() {
                                                     let local_id = session.id.clone();
                                                     let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
                                                     if let Some(cmd_tx) = agent_commands.get(&local_id) {
@@ -734,7 +773,6 @@ where
                                                         }).await;
                                                     }
                                                 }
-                                            }
                                         }
                                         // Number keys to select session directly
                                         KeyCode::Char(c @ '1'..='9') => {
@@ -824,41 +862,37 @@ where
                                     }
                                     KeyCode::Char('l') | KeyCode::Right => {
                                         // Enter directory
-                                        if app.folder_picker_enter_dir() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_enter_dir()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
                                         // Go up
-                                        if app.folder_picker_go_up() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_go_up()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Enter => {
                                         // Select folder and open agent picker
-                                        if let Some(picker) = &app.folder_picker {
-                                            if let Some(entry) = picker.selected_entry() {
+                                        if let Some(picker) = &app.folder_picker
+                                            && let Some(entry) = picker.selected_entry() {
                                                 if entry.is_parent {
                                                     // Go up
-                                                    if app.folder_picker_go_up() {
-                                                        if let Some(picker) = &app.folder_picker {
+                                                    if app.folder_picker_go_up()
+                                                        && let Some(picker) = &app.folder_picker {
                                                             let entries = scan_folder_entries(&picker.current_dir).await;
                                                             app.set_folder_entries(entries);
                                                         }
-                                                    }
                                                 } else {
                                                     let path = entry.path.clone();
                                                     app.close_folder_picker();
                                                     app.open_agent_picker(path, false);
                                                 }
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -883,7 +917,7 @@ where
                                         // Re-scan with fetch to get accurate merge status
                                         let worktree_dir = app.worktree_config.worktree_dir.clone();
                                         app.close_worktree_picker();
-                                        
+
                                         let worktree_entries = scan_worktrees(&worktree_dir, true).await;
                                         let entries: Vec<CleanupEntry> = worktree_entries.iter()
                                             .filter(|e| !e.is_create_new)
@@ -906,8 +940,8 @@ where
                                         }
                                     }
                                     KeyCode::Enter => {
-                                        if let Some(picker) = &app.worktree_picker {
-                                            if let Some(entry) = picker.selected_entry() {
+                                        if let Some(picker) = &app.worktree_picker
+                                            && let Some(entry) = picker.selected_entry() {
                                                 if entry.is_create_new {
                                                     // Create new worktree - go to folder picker
                                                     app.close_worktree_picker();
@@ -922,7 +956,6 @@ where
                                                     app.open_agent_picker(path, true);
                                                 }
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -944,34 +977,31 @@ where
                                     }
                                     KeyCode::Char('l') | KeyCode::Right => {
                                         // Enter directory
-                                        if app.folder_picker_enter_dir() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_enter_dir()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
                                         // Go up
-                                        if app.folder_picker_go_up() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_go_up()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Enter => {
                                         // Select git repo and proceed to branch input
-                                        if let Some(picker) = &app.folder_picker {
-                                            if let Some(entry) = picker.selected_entry() {
+                                        if let Some(picker) = &app.folder_picker
+                                            && let Some(entry) = picker.selected_entry() {
                                                 if entry.is_parent {
                                                     // Go up
-                                                    if app.folder_picker_go_up() {
-                                                        if let Some(picker) = &app.folder_picker {
+                                                    if app.folder_picker_go_up()
+                                                        && let Some(picker) = &app.folder_picker {
                                                             let entries = scan_folder_entries(&picker.current_dir).await;
                                                             app.set_folder_entries(entries);
                                                         }
-                                                    }
                                                 } else if entry.git_branch.is_some() {
                                                     // This is a git repo - proceed to branch input
                                                     let repo_path = entry.path.clone();
@@ -989,7 +1019,6 @@ where
                                                 }
                                                 // Non-git directories are ignored - only git repos can be selected
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -1052,28 +1081,25 @@ where
                                         }
                                     }
                                     KeyCode::Backspace => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            if branch_state.cursor_position > 0 {
+                                        if let Some(branch_state) = &mut app.branch_input
+                                            && branch_state.cursor_position > 0 {
                                                 branch_state.cursor_position -= 1;
                                                 branch_state.input.remove(branch_state.cursor_position);
                                                 branch_state.update_filter();
                                                 branch_state.show_autocomplete = true;
                                             }
-                                        }
                                     }
                                     KeyCode::Left => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            if branch_state.cursor_position > 0 {
+                                        if let Some(branch_state) = &mut app.branch_input
+                                            && branch_state.cursor_position > 0 {
                                                 branch_state.cursor_position -= 1;
                                             }
-                                        }
                                     }
                                     KeyCode::Right => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            if branch_state.cursor_position < branch_state.input.len() {
+                                        if let Some(branch_state) = &mut app.branch_input
+                                            && branch_state.cursor_position < branch_state.input.len() {
                                                 branch_state.cursor_position += 1;
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -1123,8 +1149,8 @@ where
                                     }
                                     KeyCode::Enter => {
                                         // Resume selected session (defaults to ClaudeCode for now)
-                                        if let Some(picker) = &app.session_picker {
-                                            if let Some(session) = picker.selected_session() {
+                                        if let Some(picker) = &app.session_picker
+                                            && let Some(session) = picker.selected_session() {
                                                 let resume_info = ResumeInfo {
                                                     session_id: session.session_id.clone(),
                                                     cwd: session.cwd.clone(),
@@ -1132,7 +1158,6 @@ where
                                                 app.close_session_picker();
                                                 spawn_agent_with_resume(app, &agent_tx, &mut agent_commands, AgentType::ClaudeCode, resume_info).await?;
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -1162,34 +1187,31 @@ where
                                     }
                                     KeyCode::Char('l') | KeyCode::Right => {
                                         // Enter directory
-                                        if app.folder_picker_enter_dir() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_enter_dir()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
                                         // Go up
-                                        if app.folder_picker_go_up() {
-                                            if let Some(picker) = &app.folder_picker {
+                                        if app.folder_picker_go_up()
+                                            && let Some(picker) = &app.folder_picker {
                                                 let entries = scan_folder_entries(&picker.current_dir).await;
                                                 app.set_folder_entries(entries);
                                             }
-                                        }
                                     }
                                     KeyCode::Enter => {
                                         // Select git repo and scan for cleanable worktrees
-                                        if let Some(picker) = &app.folder_picker {
-                                            if let Some(entry) = picker.selected_entry() {
+                                        if let Some(picker) = &app.folder_picker
+                                            && let Some(entry) = picker.selected_entry() {
                                                 if entry.is_parent {
                                                     // Go up
-                                                    if app.folder_picker_go_up() {
-                                                        if let Some(picker) = &app.folder_picker {
+                                                    if app.folder_picker_go_up()
+                                                        && let Some(picker) = &app.folder_picker {
                                                             let entries = scan_folder_entries(&picker.current_dir).await;
                                                             app.set_folder_entries(entries);
                                                         }
-                                                    }
                                                 } else if entry.git_branch.is_some() {
                                                     // This is a git repo - scan for worktrees
                                                     let repo_path = entry.path.clone();
@@ -1224,7 +1246,6 @@ where
                                                     }
                                                 }
                                             }
-                                        }
                                     }
                                     _ => {}
                                 }
@@ -1270,8 +1291,8 @@ where
                                     }
                                     KeyCode::Enter => {
                                         // Perform cleanup of selected worktrees
-                                        if let Some(cleanup) = &app.worktree_cleanup {
-                                            if cleanup.has_selection() {
+                                        if let Some(cleanup) = &app.worktree_cleanup
+                                            && cleanup.has_selection() {
                                                 let repo_path = cleanup.repo_path.clone();
                                                 let delete_branches = cleanup.delete_branches;
                                                 let selected: Vec<_> = cleanup.selected_entries()
@@ -1288,18 +1309,16 @@ where
                                                     log::log(&format!("Removed worktree: {}", worktree_path.display()));
 
                                                     // Delete branch if requested
-                                                    if delete_branches {
-                                                        if let Some(branch_name) = branch {
+                                                    if delete_branches
+                                                        && let Some(branch_name) = branch {
                                                             if let Err(e) = git::delete_branch(&repo_path, &branch_name, false).await {
                                                                 log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
                                                             } else {
                                                                 log::log(&format!("Deleted branch: {}", branch_name));
                                                             }
                                                         }
-                                                    }
                                                 }
                                             }
-                                        }
                                         app.close_worktree_cleanup();
                                     }
                                     _ => {}
@@ -1331,8 +1350,8 @@ where
                                     }
                                     KeyCode::Enter if has_permission => {
                                         // Handle permission approval (same as normal mode)
-                                        if let Some(session) = app.sessions.selected_session_mut() {
-                                            if let Some(perm) = &session.pending_permission {
+                                        if let Some(session) = app.sessions.selected_session_mut()
+                                            && let Some(perm) = &session.pending_permission {
                                                 let option_id = perm.selected_option()
                                                     .or_else(|| perm.allow_once_option())
                                                     .map(|o| PermissionOptionId::from(o.option_id.clone()));
@@ -1347,12 +1366,11 @@ where
                                                 session.pending_permission = None;
                                                 session.state = SessionState::Prompting;
                                             }
-                                        }
                                     }
                                     KeyCode::Enter if has_question => {
                                         // Handle question submission (same as normal mode)
-                                        if let Some(session) = app.sessions.selected_session_mut() {
-                                            if let Some(question) = &session.pending_question {
+                                        if let Some(session) = app.sessions.selected_session_mut()
+                                            && let Some(question) = &session.pending_question {
                                                 let answer = question.get_answer();
                                                 let request_id = question.request_id;
                                                 let session_id = session.id.clone();
@@ -1365,7 +1383,6 @@ where
                                                 session.pending_question = None;
                                                 session.state = SessionState::Prompting;
                                             }
-                                        }
                                     }
                                     KeyCode::Enter => {
                                         let text = app.take_input();
@@ -1525,7 +1542,6 @@ where
                                 }
                             }
                         }
-                    }
                     } // end Event::Key
                 }
             }
@@ -1534,14 +1550,13 @@ where
             Some((session_id, event)) = agent_rx.recv() => {
                 let result = handle_agent_event(app, &session_id, event);
                 // Handle auto-accept permission responses
-                if let EventResult::AutoAcceptPermission { request_id, option_id } = result {
-                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                if let EventResult::AutoAcceptPermission { request_id, option_id } = result
+                    && let Some(cmd_tx) = agent_commands.get(&session_id) {
                         let _ = cmd_tx.send(AgentCommand::PermissionResponse {
                             request_id,
                             option_id: Some(option_id),
                         }).await;
                     }
-                }
             }
 
             // Timeout to keep UI responsive and tick spinner
@@ -1580,7 +1595,11 @@ async fn spawn_agent_in_dir(
     let session_id_for_events = session_id.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            if main_tx.send((session_id_for_events.clone(), event)).await.is_err() {
+            if main_tx
+                .send((session_id_for_events.clone(), event))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -1593,17 +1612,21 @@ async fn spawn_agent_in_dir(
             Ok(mut conn) => {
                 // Initialize
                 if let Err(e) = conn.initialize().await {
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: format!("Init failed: {}", e),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgentEvent::Error {
+                            message: format!("Init failed: {}", e),
+                        })
+                        .await;
                     return;
                 }
 
                 // Create session
                 if let Err(e) = conn.new_session(cwd_clone.to_str().unwrap_or(".")).await {
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: format!("Session failed: {}", e),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgentEvent::Error {
+                            message: format!("Session failed: {}", e),
+                        })
+                        .await;
                     return;
                 }
 
@@ -1612,54 +1635,77 @@ async fn spawn_agent_in_dir(
                     match cmd {
                         AgentCommand::Prompt { session_id, text } => {
                             if let Err(e) = conn.prompt(&session_id, &text).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Prompt failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Prompt failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::PromptWithContent { session_id, content } => {
+                        AgentCommand::PromptWithContent {
+                            session_id,
+                            content,
+                        } => {
                             if let Err(e) = conn.prompt_with_content(&session_id, content).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Prompt failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Prompt failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::PermissionResponse { request_id, option_id } => {
+                        AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id,
+                        } => {
                             if let Err(e) = conn.respond_permission(request_id, option_id).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Permission response failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Permission response failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                         AgentCommand::AskUserResponse { request_id, answer } => {
                             let response = AskUserResponse::text(answer);
                             if let Err(e) = conn.respond_ask_user(request_id, response).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Ask user response failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Ask user response failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                         AgentCommand::CancelPrompt => {
                             if let Err(e) = conn.cancel_prompt().await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Cancel failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Cancel failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::SetModel { session_id, model_id } => {
+                        AgentCommand::SetModel {
+                            session_id,
+                            model_id,
+                        } => {
                             if let Err(e) = conn.set_model(&session_id, &model_id).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Set model failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Set model failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: format!("Spawn failed: {}", e),
-                }).await;
+                let _ = event_tx
+                    .send(AgentEvent::Error {
+                        message: format!("Spawn failed: {}", e),
+                    })
+                    .await;
             }
         }
     });
@@ -1698,7 +1744,11 @@ async fn spawn_agent_with_resume(
     let session_id_for_events = session_id.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            if main_tx.send((session_id_for_events.clone(), event)).await.is_err() {
+            if main_tx
+                .send((session_id_for_events.clone(), event))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -1711,17 +1761,24 @@ async fn spawn_agent_with_resume(
             Ok(mut conn) => {
                 // Initialize
                 if let Err(e) = conn.initialize().await {
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: format!("Init failed: {}", e),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgentEvent::Error {
+                            message: format!("Init failed: {}", e),
+                        })
+                        .await;
                     return;
                 }
 
                 // Load existing session
-                if let Err(e) = conn.load_session(&resume_session_id, cwd_clone.to_str().unwrap_or(".")).await {
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: format!("Session load failed: {}", e),
-                    }).await;
+                if let Err(e) = conn
+                    .load_session(&resume_session_id, cwd_clone.to_str().unwrap_or("."))
+                    .await
+                {
+                    let _ = event_tx
+                        .send(AgentEvent::Error {
+                            message: format!("Session load failed: {}", e),
+                        })
+                        .await;
                     return;
                 }
 
@@ -1730,54 +1787,77 @@ async fn spawn_agent_with_resume(
                     match cmd {
                         AgentCommand::Prompt { session_id, text } => {
                             if let Err(e) = conn.prompt(&session_id, &text).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Prompt failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Prompt failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::PromptWithContent { session_id, content } => {
+                        AgentCommand::PromptWithContent {
+                            session_id,
+                            content,
+                        } => {
                             if let Err(e) = conn.prompt_with_content(&session_id, content).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Prompt failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Prompt failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::PermissionResponse { request_id, option_id } => {
+                        AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id,
+                        } => {
                             if let Err(e) = conn.respond_permission(request_id, option_id).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Permission response failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Permission response failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                         AgentCommand::AskUserResponse { request_id, answer } => {
                             let response = AskUserResponse::text(answer);
                             if let Err(e) = conn.respond_ask_user(request_id, response).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Ask user response failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Ask user response failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                         AgentCommand::CancelPrompt => {
                             if let Err(e) = conn.cancel_prompt().await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Cancel failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Cancel failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
-                        AgentCommand::SetModel { session_id, model_id } => {
+                        AgentCommand::SetModel {
+                            session_id,
+                            model_id,
+                        } => {
                             if let Err(e) = conn.set_model(&session_id, &model_id).await {
-                                let _ = event_tx.send(AgentEvent::Error {
-                                    message: format!("Set model failed: {}", e),
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Set model failed: {}", e),
+                                    })
+                                    .await;
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: format!("Spawn failed: {}", e),
-                }).await;
+                let _ = event_tx
+                    .send(AgentEvent::Error {
+                        message: format!("Spawn failed: {}", e),
+                    })
+                    .await;
             }
         }
     });
@@ -1800,7 +1880,8 @@ async fn send_prompt(
 
         // Show user input with attachment indicator
         if has_attachments {
-            let attachment_names: Vec<_> = attachments.iter().map(|a| a.filename.as_str()).collect();
+            let attachment_names: Vec<_> =
+                attachments.iter().map(|a| a.filename.as_str()).collect();
             session.add_output(
                 format!("> {} [+{}]", text, attachment_names.join(", ")),
                 OutputType::UserInput,
@@ -1820,7 +1901,9 @@ async fn send_prompt(
 
             // Add text if present
             if !text.is_empty() {
-                content.push(ContentBlock::Text { text: text.to_string() });
+                content.push(ContentBlock::Text {
+                    text: text.to_string(),
+                });
             }
 
             // Add image attachments
@@ -1833,18 +1916,22 @@ async fn send_prompt(
 
             // Send with content blocks
             if let Some(cmd_tx) = agent_commands.get(&local_id) {
-                let _ = cmd_tx.send(AgentCommand::PromptWithContent {
-                    session_id: acp_session_id,
-                    content,
-                }).await;
+                let _ = cmd_tx
+                    .send(AgentCommand::PromptWithContent {
+                        session_id: acp_session_id,
+                        content,
+                    })
+                    .await;
             }
         } else {
             // Send simple text prompt
             if let Some(cmd_tx) = agent_commands.get(&local_id) {
-                let _ = cmd_tx.send(AgentCommand::Prompt {
-                    session_id: acp_session_id,
-                    text: text.to_string(),
-                }).await;
+                let _ = cmd_tx
+                    .send(AgentCommand::Prompt {
+                        session_id: acp_session_id,
+                        text: text.to_string(),
+                    })
+                    .await;
             }
         }
     }
@@ -1853,7 +1940,10 @@ async fn send_prompt(
 /// Result of handling an agent event - may contain a command to send back
 enum EventResult {
     None,
-    AutoAcceptPermission { request_id: u64, option_id: PermissionOptionId },
+    AutoAcceptPermission {
+        request_id: u64,
+        option_id: PermissionOptionId,
+    },
 }
 
 fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> EventResult {
@@ -1863,21 +1953,23 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
     let cursor_position = app.cursor_position;
 
     // Check if this session is the currently selected one
-    let is_selected_session = app.sessions.selected_session()
+    let is_selected_session = app
+        .sessions
+        .selected_session()
         .map(|s| s.id == session_id)
         .unwrap_or(false);
 
     if let Some(session) = app.sessions.get_by_id_mut(session_id) {
         match event {
-            AgentEvent::Initialized { agent_info, agent_capabilities } => {
+            AgentEvent::Initialized {
+                agent_info,
+                agent_capabilities,
+            } => {
                 session.state = SessionState::Initializing;
-                if let Some(info) = agent_info {
-                    if let Some(name) = info.name {
-                        session.add_output(
-                            format!("Connected to {}", name),
-                            OutputType::Text,
-                        );
-                    }
+                if let Some(info) = agent_info
+                    && let Some(name) = info.name
+                {
+                    session.add_output(format!("Connected to {}", name), OutputType::Text);
                 }
                 if let Some(caps) = agent_capabilities {
                     // Format capabilities nicely
@@ -1895,7 +1987,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                     session.available_models = models_state.available_models;
                     session.current_model_id = Some(models_state.current_model_id);
                 }
-                session.add_output("Session ready. Press [i] to type.".to_string(), OutputType::Text);
+                session.add_output(
+                    "Session ready. Press [i] to type.".to_string(),
+                    OutputType::Text,
+                );
             }
             AgentEvent::Update { update, .. } => {
                 match update {
@@ -1907,7 +2002,12 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                     SessionUpdate::AgentThoughtChunk => {
                         // Silently ignore
                     }
-                    SessionUpdate::ToolCall { tool_call_id, title, raw_description, .. } => {
+                    SessionUpdate::ToolCall {
+                        tool_call_id,
+                        title,
+                        raw_description,
+                        ..
+                    } => {
                         // Helper to strip all backticks from a string
                         fn strip_backticks(s: &str) -> String {
                             s.replace('`', "")
@@ -1937,7 +2037,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         // Helper to clean description by removing "undefined" segments
                         fn clean_description(desc: &str) -> Option<String> {
                             // Split by common separators and filter out undefined parts
-                            let parts: Vec<&str> = desc.split(&[',', ':'][..])
+                            let parts: Vec<&str> = desc
+                                .split(&[',', ':'][..])
                                 .map(|p| p.trim())
                                 .filter(|p| !is_undefined_or_empty(p) && !p.contains("undefined"))
                                 .collect();
@@ -1950,13 +2051,15 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
 
                         // Parse title like "Bash(git push)" or "Read(`src/main.rs`)" or "Edit `file.rs`" into name and description
                         let (name, description) = if let Some(paren_pos) = title_str.find('(') {
-                            let raw_name = strip_backticks(&title_str[..paren_pos]).trim().to_string();
+                            let raw_name =
+                                strip_backticks(&title_str[..paren_pos]).trim().to_string();
                             // Check if the name part is undefined/empty
                             if is_undefined_or_empty(&raw_name) {
                                 ("Tool".to_string(), None)
                             } else {
                                 let name = clean_tool_name(&raw_name);
-                                let desc = title_str[paren_pos + 1..].trim_end_matches(')').to_string();
+                                let desc =
+                                    title_str[paren_pos + 1..].trim_end_matches(')').to_string();
                                 // Strip backticks and check for undefined in description
                                 let desc = strip_backticks(&desc);
                                 let desc = clean_description(&desc);
@@ -1975,7 +2078,14 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         } else if title_str.starts_with('`') && title_str.ends_with('`') {
                             // Command in backticks like `cd /path && cargo build`
                             let cmd = strip_backticks(&title_str);
-                            ("Bash".to_string(), if is_undefined_or_empty(&cmd) { None } else { Some(cmd) })
+                            (
+                                "Bash".to_string(),
+                                if is_undefined_or_empty(&cmd) {
+                                    None
+                                } else {
+                                    Some(cmd)
+                                },
+                            )
                         } else if let Some(backtick_pos) = title_str.find(" `") {
                             // Format like "Edit `file.rs`" - tool name followed by backtick-wrapped arg
                             let raw_name = &title_str[..backtick_pos];
@@ -1990,7 +2100,14 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                                 "glob" => "Glob",
                                 other => other,
                             };
-                            (mapped_name.to_string(), if is_undefined_or_empty(&desc) { None } else { Some(desc) })
+                            (
+                                mapped_name.to_string(),
+                                if is_undefined_or_empty(&desc) {
+                                    None
+                                } else {
+                                    Some(desc)
+                                },
+                            )
                         } else {
                             // Map common tool names and strip any stray backticks
                             let clean_title = strip_backticks(&title_str);
@@ -2011,7 +2128,7 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         // This helps with tools like Task that send description in rawInput
                         // Also filter out undefined values from raw_description
                         let raw_description = raw_description.filter(|d| !is_undefined_or_empty(d));
-                        
+
                         // For Read/Grep/Glob tools, prefer raw_description (file_path/pattern) over parsed description
                         // because the title often contains "undefined" or just line numbers
                         let description = match name.as_str() {
@@ -2020,9 +2137,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         };
 
                         // Final safety filter: remove any description containing "undefined"
-                        let description = description.filter(|d| {
-                            !d.contains("undefined") && !d.trim().is_empty()
-                        });
+                        let description = description
+                            .filter(|d| !d.contains("undefined") && !d.trim().is_empty());
 
                         // Only add spacing for new tool calls, not updates
                         let is_new = !session.has_tool_call(&tool_call_id);
@@ -2031,7 +2147,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         }
                         session.add_tool_call(tool_call_id, name, description);
                     }
-                    SessionUpdate::ToolCallUpdate { tool_call_id, status } => {
+                    SessionUpdate::ToolCallUpdate {
+                        tool_call_id,
+                        status,
+                    } => {
                         // Check if this tool is completing
                         if status == "completed" {
                             // Mark the tool as complete if it's the active one
@@ -2041,7 +2160,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         } else if status == "error" || status == "failed" {
                             // Mark the tool as failed
                             session.mark_tool_failed(&tool_call_id);
-                        } else if !status.trim().is_empty() && status != "in_progress" && status != "pending" {
+                        } else if !status.trim().is_empty()
+                            && status != "in_progress"
+                            && status != "pending"
+                        {
                             // Only show meaningful status updates (not lifecycle states)
                             session.add_tool_output(status);
                         }
@@ -2056,7 +2178,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         // Silently ignore - not needed for UI
                     }
                     SessionUpdate::Other { raw_type } => {
-                        session.add_output(format!("[Unknown update: {}]", raw_type.as_deref().unwrap_or("?")), OutputType::Text);
+                        session.add_output(
+                            format!("[Unknown update: {}]", raw_type.as_deref().unwrap_or("?")),
+                            OutputType::Text,
+                        );
                     }
                 }
             }
@@ -2070,7 +2195,10 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 // Check if we should auto-accept (AcceptAll mode)
                 if session.permission_mode == PermissionMode::AcceptAll {
                     // Find the first allow_once option
-                    if let Some(option) = options.iter().find(|o| o.kind == crate::acp::PermissionKind::AllowOnce) {
+                    if let Some(option) = options
+                        .iter()
+                        .find(|o| o.kind == crate::acp::PermissionKind::AllowOnce)
+                    {
                         session.state = SessionState::Prompting;
                         // Auto-scroll to bottom only if already at bottom
                         if session.scroll_offset == usize::MAX {

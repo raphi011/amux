@@ -1,8 +1,10 @@
+use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
 use std::path::PathBuf;
 use std::time::Instant;
-use crate::acp::{PermissionOptionInfo, PermissionKind, PlanEntry, AskUserOption};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub enum AgentType {
     ClaudeCode,
     GeminiCli,
@@ -50,31 +52,31 @@ impl SessionState {
             // From Spawning
             (Spawning, Initializing) => true,
             (Spawning, Idle) => true, // Error/disconnect case
-            
+
             // From Initializing
             (Initializing, Idle) => true,
             (Initializing, Prompting) => true, // Auto-prompt on init
-            
+
             // From Idle
             (Idle, Prompting) => true,
             (Idle, Spawning) => false, // Can't go back to spawning
-            
+
             // From Prompting
             (Prompting, Idle) => true, // Prompt complete or cancelled
             (Prompting, AwaitingPermission) => true,
             (Prompting, AwaitingUserInput) => true,
-            
+
             // From AwaitingPermission
             (AwaitingPermission, Prompting) => true, // Permission granted
-            (AwaitingPermission, Idle) => true, // Permission denied
-            
+            (AwaitingPermission, Idle) => true,      // Permission denied
+
             // From AwaitingUserInput
             (AwaitingUserInput, Prompting) => true, // Answer provided
-            (AwaitingUserInput, Idle) => true, // Cancelled
-            
+            (AwaitingUserInput, Idle) => true,      // Cancelled
+
             // Self-transitions are always valid (no-op)
             (a, b) if *a == b => true,
-            
+
             _ => false,
         }
     }
@@ -82,7 +84,10 @@ impl SessionState {
     /// Returns true if the session is waiting for user interaction
     #[allow(dead_code)]
     pub fn awaiting_user(&self) -> bool {
-        matches!(self, SessionState::AwaitingPermission | SessionState::AwaitingUserInput)
+        matches!(
+            self,
+            SessionState::AwaitingPermission | SessionState::AwaitingUserInput
+        )
     }
 
     /// Returns true if the session can receive a new prompt
@@ -96,7 +101,7 @@ impl SessionState {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PermissionMode {
     #[default]
-    Normal,    // Ask for each permission
+    Normal, // Ask for each permission
     Plan,      // Plan mode - more cautious
     AcceptAll, // Auto-accept all permissions
 }
@@ -136,7 +141,10 @@ impl SessionState {
     }
 
     pub fn is_active(&self) -> bool {
-        matches!(self, SessionState::Spawning | SessionState::Initializing | SessionState::Prompting)
+        matches!(
+            self,
+            SessionState::Spawning | SessionState::Initializing | SessionState::Prompting
+        )
     }
 }
 
@@ -160,7 +168,10 @@ impl PendingPermission {
 
     pub fn select_prev(&mut self) {
         if !self.options.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.options.len() - 1);
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.options.len() - 1);
         }
     }
 
@@ -170,7 +181,9 @@ impl PendingPermission {
 
     /// Find the first "allow once" option
     pub fn allow_once_option(&self) -> Option<&PermissionOptionInfo> {
-        self.options.iter().find(|o| o.kind == PermissionKind::AllowOnce)
+        self.options
+            .iter()
+            .find(|o| o.kind == PermissionKind::AllowOnce)
     }
 }
 
@@ -188,7 +201,12 @@ pub struct PendingQuestion {
 }
 
 impl PendingQuestion {
-    pub fn new(request_id: u64, question: String, options: Vec<AskUserOption>, multi_select: bool) -> Self {
+    pub fn new(
+        request_id: u64,
+        question: String,
+        options: Vec<AskUserOption>,
+        multi_select: bool,
+    ) -> Self {
         Self {
             request_id,
             question,
@@ -213,7 +231,10 @@ impl PendingQuestion {
 
     pub fn select_prev(&mut self) {
         if !self.options.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.options.len() - 1);
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.options.len() - 1);
         }
     }
 
@@ -316,13 +337,13 @@ pub struct OutputLine {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputType {
-    Text,       // Agent response text
-    UserInput,  // User's prompt
+    Text,      // Agent response text
+    UserInput, // User's prompt
     ToolCall {
         tool_call_id: String,
         name: String,
         description: Option<String>,
-        failed: bool,  // Whether the tool call failed
+        failed: bool, // Whether the tool call failed
     },
     ToolOutput,  // Output from a tool (shown with └ connector)
     DiffAdd,     // Added line in diff (green)
@@ -333,7 +354,13 @@ pub enum OutputType {
 }
 
 impl Session {
-    pub fn new(id: String, name: String, agent_type: AgentType, cwd: PathBuf, is_worktree: bool) -> Self {
+    pub fn new(
+        id: String,
+        name: String,
+        agent_type: AgentType,
+        cwd: PathBuf,
+        is_worktree: bool,
+    ) -> Self {
         Self {
             id,
             acp_session_id: None,
@@ -362,7 +389,7 @@ impl Session {
     }
 
     /// Transition to a new state, logging invalid transitions
-    /// 
+    ///
     /// This method validates the transition and logs a warning if the
     /// transition is invalid (but still allows it for backward compatibility).
     #[allow(dead_code)]
@@ -417,7 +444,9 @@ impl Session {
             return None;
         }
 
-        let current_idx = self.current_model_id.as_ref()
+        let current_idx = self
+            .current_model_id
+            .as_ref()
             .and_then(|id| self.available_models.iter().position(|m| &m.model_id == id))
             .unwrap_or(0);
 
@@ -430,7 +459,8 @@ impl Session {
     /// Get display name for current model
     pub fn current_model_name(&self) -> Option<&str> {
         self.current_model_id.as_ref().and_then(|id| {
-            self.available_models.iter()
+            self.available_models
+                .iter()
                 .find(|m| &m.model_id == id)
                 .map(|m| m.name.as_str())
         })
@@ -494,22 +524,37 @@ impl Session {
 
     /// Add or update a tool call in output
     /// If a tool call with the same ID already exists, update it (for progressive disclosure)
-    pub fn add_tool_call(&mut self, tool_call_id: String, name: String, description: Option<String>) {
+    pub fn add_tool_call(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        description: Option<String>,
+    ) {
         // Check if we already have this tool call - if so, update it
         for line in self.output.iter_mut().rev() {
-            if let OutputType::ToolCall { tool_call_id: existing_id, name: existing_name, description: existing_desc, .. } = &mut line.line_type {
-                if existing_id == &tool_call_id {
-                    // Update with better info if available
-                    if description.is_some() && existing_desc.is_none() {
-                        *existing_desc = description;
-                    }
-                    // Update name if we got a more specific one
-                    if name != "Tool" && (existing_name == "Tool" || existing_name == "Read File" || existing_name == "Edit" || existing_name == "Terminal") {
-                        *existing_name = name;
-                    }
-                    self.last_activity = Some(Instant::now());
-                    return;
+            if let OutputType::ToolCall {
+                tool_call_id: existing_id,
+                name: existing_name,
+                description: existing_desc,
+                ..
+            } = &mut line.line_type
+                && existing_id == &tool_call_id
+            {
+                // Update with better info if available
+                if description.is_some() && existing_desc.is_none() {
+                    *existing_desc = description;
                 }
+                // Update name if we got a more specific one
+                if name != "Tool"
+                    && (existing_name == "Tool"
+                        || existing_name == "Read File"
+                        || existing_name == "Edit"
+                        || existing_name == "Terminal")
+                {
+                    *existing_name = name;
+                }
+                self.last_activity = Some(Instant::now());
+                return;
             }
         }
 
@@ -517,7 +562,12 @@ impl Session {
         self.active_tool_call_id = Some(tool_call_id.clone());
         self.output.push(OutputLine {
             content: String::new(),
-            line_type: OutputType::ToolCall { tool_call_id, name, description, failed: false },
+            line_type: OutputType::ToolCall {
+                tool_call_id,
+                name,
+                description,
+                failed: false,
+            },
         });
         self.last_activity = Some(Instant::now());
     }
@@ -530,11 +580,15 @@ impl Session {
     /// Mark a tool call as failed
     pub fn mark_tool_failed(&mut self, tool_call_id: &str) {
         for line in self.output.iter_mut().rev() {
-            if let OutputType::ToolCall { tool_call_id: existing_id, failed, .. } = &mut line.line_type {
-                if existing_id == tool_call_id {
-                    *failed = true;
-                    break;
-                }
+            if let OutputType::ToolCall {
+                tool_call_id: existing_id,
+                failed,
+                ..
+            } = &mut line.line_type
+                && existing_id == tool_call_id
+            {
+                *failed = true;
+                break;
             }
         }
         // Also complete the tool so it stops spinning
@@ -561,18 +615,28 @@ impl Session {
             } else if line.starts_with('-') && !line.starts_with("---") {
                 // Removed line - strip the '-' prefix since we use color coding
                 (OutputType::DiffRemove, line[1..].to_string())
-            } else if line.starts_with(' ') && line.len() > 10 && line.chars().skip(1).take(9).all(|c| c.is_ascii_digit() || c == ' ') {
+            } else if line.starts_with(' ')
+                && line.len() > 10
+                && line
+                    .chars()
+                    .skip(1)
+                    .take(9)
+                    .all(|c| c.is_ascii_digit() || c == ' ')
+            {
                 // Context line - starts with space followed by line numbers (e.g., " 123  456 ")
                 // Strip the leading space to align with add/remove lines
                 (OutputType::DiffContext, line[1..].to_string())
             } else if line.starts_with("@@") {
                 // Skip @@ hunk headers entirely
                 continue;
-            } else if line.starts_with("diff ") || line.starts_with("index ")
-                    || line.starts_with("---") || line.starts_with("+++") {
-                (OutputType::DiffHeader, line.to_string())
-            } else if line.starts_with("Added ") || line.starts_with("Removed ")
-                    || line.contains(" lines,") {
+            } else if line.starts_with("diff ")
+                || line.starts_with("index ")
+                || line.starts_with("---")
+                || line.starts_with("+++")
+                || line.starts_with("Added ")
+                || line.starts_with("Removed ")
+                || line.contains(" lines,")
+            {
                 (OutputType::DiffHeader, line.to_string())
             } else {
                 (OutputType::ToolOutput, line.to_string())

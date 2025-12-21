@@ -1,16 +1,16 @@
 use ratatui::{
-    layout::{Constraint, Layout, Rect, Position},
+    Frame,
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
-use crate::app::{App, InputMode};
-use crate::session::{SessionState, PermissionMode};
-use crate::acp::{PermissionKind, PlanStatus};
-use crate::picker::Picker;
 use super::theme::*;
+use crate::acp::{PermissionKind, PlanStatus};
+use crate::app::{App, InputMode};
+use crate::picker::Picker;
+use crate::session::{PermissionMode, SessionState};
 
 // Layout constants
 const SIDEBAR_WIDTH: u16 = 40;
@@ -44,8 +44,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Sidebar: logo + session list (includes hotkeys and plan at bottom)
     let sidebar_layout = Layout::vertical([
-        Constraint::Length(1),  // Logo (single line)
-        Constraint::Min(0),     // Session list + hotkeys + plan
+        Constraint::Length(1), // Logo (single line)
+        Constraint::Min(0),    // Session list + hotkeys + plan
     ])
     .split(sidebar_inner);
 
@@ -56,11 +56,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_session_list(frame, sidebar_layout[1], app);
 
     // Check if there's a pending permission or question
-    let has_permission = app.selected_session()
+    let has_permission = app
+        .selected_session()
         .map(|s| s.pending_permission.is_some())
         .unwrap_or(false);
 
-    let has_question = app.selected_session()
+    let has_question = app
+        .selected_session()
         .map(|s| s.pending_question.is_some())
         .unwrap_or(false);
 
@@ -74,7 +76,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         // Calculate wrapped lines for input buffer only (attachments are on separate line)
         let wrapped_lines = if input_area_width > 0 && !app.input_buffer.is_empty() {
-            ((app.input_buffer.len() + input_area_width - 1) / input_area_width).max(1)
+            app.input_buffer.len().div_ceil(input_area_width).max(1)
         } else {
             1
         };
@@ -88,23 +90,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         if let Some(session) = app.selected_session() {
             if let Some(q) = &session.pending_question {
                 // 2 for question + blank, options count, 2 for input, 1 for help
-                let options_height = if q.options.is_empty() { 0 } else { q.options.len() as u16 + 1 };
+                let options_height = if q.options.is_empty() {
+                    0
+                } else {
+                    q.options.len() as u16 + 1
+                };
                 5 + options_height
-            } else { 6 }
-        } else { 6 }
-    } else { 6 };
+            } else {
+                6
+            }
+        } else {
+            6
+        }
+    } else {
+        6
+    };
 
     // Right side: output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
-            Constraint::Min(0),     // Output
-            Constraint::Length(6),  // Permission dialog
+            Constraint::Min(0),    // Output
+            Constraint::Length(6), // Permission dialog
         ])
         .split(content_layout[4])
     } else if has_question {
         Layout::vertical([
-            Constraint::Min(0),                    // Output
-            Constraint::Length(question_height),   // Question dialog
+            Constraint::Min(0),                  // Output
+            Constraint::Length(question_height), // Question dialog
         ])
         .split(content_layout[4])
     } else {
@@ -119,7 +131,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
 
     // Render folder picker, agent picker, session picker, branch input, worktree picker, or output area
-    if app.input_mode == InputMode::FolderPicker || app.input_mode == InputMode::WorktreeFolderPicker || app.input_mode == InputMode::WorktreeCleanupRepoPicker {
+    if app.input_mode == InputMode::FolderPicker
+        || app.input_mode == InputMode::WorktreeFolderPicker
+        || app.input_mode == InputMode::WorktreeCleanupRepoPicker
+    {
         render_folder_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::WorktreePicker {
         render_worktree_picker(frame, right_layout[0], app);
@@ -184,7 +199,7 @@ fn render_logo(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     use crate::app::ClickRegion;
     use crate::session::AgentType;
 
@@ -203,11 +218,11 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
         // Activity indicator for working sessions
         let activity = if session.pending_permission.is_some() {
-            " ⚠".to_string()  // Permission required
+            " ⚠".to_string() // Permission required
         } else if session.pending_question.is_some() {
-            " ?".to_string()  // Question pending
+            " ?".to_string() // Question pending
         } else if session.state.is_active() {
-            format!(" {}", app.spinner())  // Animated spinner
+            format!(" {}", app.spinner()) // Animated spinner
         } else {
             String::new()
         };
@@ -257,7 +272,10 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         // Show mode if set (e.g., "plan")
         if let Some(mode) = &session.current_mode {
             second_spans.push(Span::raw("  "));
-            second_spans.push(Span::styled(format!("[{}]", mode), Style::new().fg(LOGO_GOLD)));
+            second_spans.push(Span::styled(
+                format!("[{}]", mode),
+                Style::new().fg(LOGO_GOLD),
+            ));
         }
 
         let second_line = Line::from(second_spans);
@@ -276,54 +294,60 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if session_lines.is_empty() {
         session_lines.push(Line::styled("No sessions", Style::new().fg(TEXT_DIM)));
-        session_lines.push(Line::styled("Press [n] to create one", Style::new().fg(TEXT_DIM)));
+        session_lines.push(Line::styled(
+            "Press [n] to create one",
+            Style::new().fg(TEXT_DIM),
+        ));
     }
 
     // Help hint line at bottom of sidebar
-    let hotkey_lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
-            Span::styled(" help", Style::new().fg(TEXT_DIM)),
-        ]),
-    ];
+    let hotkey_lines: Vec<Line> = vec![Line::from(vec![
+        Span::styled("[?]", Style::new().fg(TEXT_WHITE)),
+        Span::styled(" help", Style::new().fg(TEXT_DIM)),
+    ])];
 
     // Build plan lines for selected session
     let mut plan_lines: Vec<Line> = vec![];
-    if let Some(session) = app.selected_session() {
-        if !session.plan_entries.is_empty() {
-            // Separator and header before plan
-            let separator = "─".repeat(area.width.saturating_sub(2) as usize);
-            plan_lines.push(Line::styled(separator, Style::new().fg(TEXT_DIM)));
-            plan_lines.push(Line::styled("Tasks", Style::new().fg(TEXT_WHITE).bold()));
-            plan_lines.push(Line::raw("")); // Empty line after header
+    if let Some(session) = app.selected_session()
+        && !session.plan_entries.is_empty()
+    {
+        // Separator and header before plan
+        let separator = "─".repeat(area.width.saturating_sub(2) as usize);
+        plan_lines.push(Line::styled(separator, Style::new().fg(TEXT_DIM)));
+        plan_lines.push(Line::styled("Tasks", Style::new().fg(TEXT_WHITE).bold()));
+        plan_lines.push(Line::raw("")); // Empty line after header
 
-            // Plan entries
-            for entry in &session.plan_entries {
-                let (icon, style) = match entry.status {
-                    PlanStatus::Pending => ("○", Style::new().fg(TEXT_DIM)),
-                    PlanStatus::InProgress => ("◐", Style::new().fg(LOGO_MINT)),
-                    PlanStatus::Completed => ("●", Style::new().fg(TEXT_DIM).add_modifier(Modifier::CROSSED_OUT)),
-                    PlanStatus::Unknown => ("?", Style::new().fg(TEXT_DIM)),
-                };
+        // Plan entries
+        for entry in &session.plan_entries {
+            let (icon, style) = match entry.status {
+                PlanStatus::Pending => ("○", Style::new().fg(TEXT_DIM)),
+                PlanStatus::InProgress => ("◐", Style::new().fg(LOGO_MINT)),
+                PlanStatus::Completed => (
+                    "●",
+                    Style::new()
+                        .fg(TEXT_DIM)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                ),
+                PlanStatus::Unknown => ("?", Style::new().fg(TEXT_DIM)),
+            };
 
-                // Wrap content to fit sidebar (icon takes 2 chars)
-                let max_width = area.width.saturating_sub(4) as usize;
-                let wrapped = wrap_text(&entry.content, max_width);
+            // Wrap content to fit sidebar (icon takes 2 chars)
+            let max_width = area.width.saturating_sub(4) as usize;
+            let wrapped = wrap_text(&entry.content, max_width);
 
-                for (i, line_text) in wrapped.iter().enumerate() {
-                    if i == 0 {
-                        // First line: icon + text
-                        plan_lines.push(Line::from(vec![
-                            Span::styled(format!("{} ", icon), style),
-                            Span::styled(line_text.clone(), style),
-                        ]));
-                    } else {
-                        // Continuation lines: indent to align with text
-                        plan_lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(line_text.clone(), style),
-                        ]));
-                    }
+            for (i, line_text) in wrapped.iter().enumerate() {
+                if i == 0 {
+                    // First line: icon + text
+                    plan_lines.push(Line::from(vec![
+                        Span::styled(format!("{} ", icon), style),
+                        Span::styled(line_text.clone(), style),
+                    ]));
+                } else {
+                    // Continuation lines: indent to align with text
+                    plan_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(line_text.clone(), style),
+                    ]));
                 }
             }
         }
@@ -349,7 +373,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
     use crate::session::OutputType;
 
     let inner_height = area.height as usize;
@@ -361,12 +385,16 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines: Vec<Line> = if let Some(session) = app.selected_session() {
         if session.output.is_empty() {
             let status = match session.state {
-                SessionState::Idle => format!("{} is idle.\n\nPress [i] to type a message.", session.name),
+                SessionState::Idle => {
+                    format!("{} is idle.\n\nPress [i] to type a message.", session.name)
+                }
                 SessionState::Spawning => format!("Starting {}...", session.name),
                 SessionState::Initializing => format!("Initializing {}...", session.name),
                 SessionState::Prompting => format!("{} is working...", session.name),
                 SessionState::AwaitingPermission => format!("{} needs permission.", session.name),
-                SessionState::AwaitingUserInput => format!("{} is asking a question.", session.name),
+                SessionState::AwaitingUserInput => {
+                    format!("{} is asking a question.", session.name)
+                }
             };
             vec![Line::styled(status, Style::new().fg(TEXT_DIM))]
         } else {
@@ -375,7 +403,8 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
             let spinner = app.spinner();
 
             // First expand all output to visual lines
-            let all_lines: Vec<Line> = session.output
+            let all_lines: Vec<Line> = session
+                .output
                 .iter()
                 .flat_map(|output_line| {
                     match &output_line.line_type {
@@ -386,18 +415,30 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             }
                             // Agent response - render as markdown using ratskin/termimad
                             let skin = ratskin::RatSkin::default();
-                            skin.parse(ratskin::RatSkin::parse_text(&output_line.content), inner_width as u16)
+                            skin.parse(
+                                ratskin::RatSkin::parse_text(&output_line.content),
+                                inner_width as u16,
+                            )
                         }
                         OutputType::UserInput => {
                             // User prompt - cyan/blue
                             let wrapped = wrap_text(&output_line.content, inner_width);
-                            wrapped.into_iter().map(|text| {
-                                Line::from(vec![
-                                    Span::styled(text, Style::new().fg(LOGO_LIGHT_BLUE).bold()),
-                                ])
-                            }).collect()
+                            wrapped
+                                .into_iter()
+                                .map(|text| {
+                                    Line::from(vec![Span::styled(
+                                        text,
+                                        Style::new().fg(LOGO_LIGHT_BLUE).bold(),
+                                    )])
+                                })
+                                .collect()
                         }
-                        OutputType::ToolCall { tool_call_id, name, description, failed } => {
+                        OutputType::ToolCall {
+                            tool_call_id,
+                            name,
+                            description,
+                            failed,
+                        } => {
                             // Tool call - spinner if active, red dot if failed, green dot if complete
                             let is_active = active_tool_id == Some(tool_call_id.as_str());
                             let (indicator, indicator_color) = if is_active {
@@ -419,32 +460,44 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             };
                             // Wrap tool call display for narrow windows (indicator is 2 chars)
                             let wrapped = wrap_text(&display, inner_width.saturating_sub(2));
-                            wrapped.into_iter().enumerate().map(|(i, text)| {
-                                let prefix = if i == 0 {
-                                    Span::styled(indicator.clone(), Style::new().fg(indicator_color))
-                                } else {
-                                    Span::styled("  ", Style::new().fg(indicator_color))
-                                };
-                                Line::from(vec![
-                                    prefix,
-                                    Span::styled(text, Style::new().fg(TEXT_WHITE).bold()),
-                                ])
-                            }).collect()
+                            wrapped
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, text)| {
+                                    let prefix = if i == 0 {
+                                        Span::styled(
+                                            indicator.clone(),
+                                            Style::new().fg(indicator_color),
+                                        )
+                                    } else {
+                                        Span::styled("  ", Style::new().fg(indicator_color))
+                                    };
+                                    Line::from(vec![
+                                        prefix,
+                                        Span::styled(text, Style::new().fg(TEXT_WHITE).bold()),
+                                    ])
+                                })
+                                .collect()
                         }
                         OutputType::ToolOutput => {
                             // Tool output - └ connector, plain text (no markdown)
-                            let wrapped = wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped.into_iter().enumerate().map(|(i, text)| {
-                                let prefix = if i == 0 {
-                                    Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR))
-                                } else {
-                                    Span::styled("  ", Style::new().fg(TOOL_CONNECTOR))
-                                };
-                                Line::from(vec![
-                                    prefix,
-                                    Span::styled(text, Style::new().fg(TEXT_DIM)),
-                                ])
-                            }).collect()
+                            let wrapped =
+                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                            wrapped
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, text)| {
+                                    let prefix = if i == 0 {
+                                        Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR))
+                                    } else {
+                                        Span::styled("  ", Style::new().fg(TOOL_CONNECTOR))
+                                    };
+                                    Line::from(vec![
+                                        prefix,
+                                        Span::styled(text, Style::new().fg(TEXT_DIM)),
+                                    ])
+                                })
+                                .collect()
                         }
                         OutputType::DiffAdd => {
                             // Added line - green background, no padding
@@ -472,7 +525,11 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             vec![Line::from(vec![
                                 Span::styled("  ", Style::new()),
                                 Span::styled(
-                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    format!(
+                                        "{:width$}",
+                                        content,
+                                        width = inner_width.saturating_sub(2)
+                                    ),
                                     Style::new().fg(TEXT_DIM),
                                 ),
                             ])]
@@ -483,20 +540,28 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             vec![Line::from(vec![
                                 Span::styled("  ", Style::new()),
                                 Span::styled(
-                                    format!("{:width$}", content, width = inner_width.saturating_sub(2)),
+                                    format!(
+                                        "{:width$}",
+                                        content,
+                                        width = inner_width.saturating_sub(2)
+                                    ),
                                     Style::new().fg(TEXT_DIM),
                                 ),
                             ])]
                         }
                         OutputType::Error => {
                             // Error - red
-                            let wrapped = wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped.into_iter().map(|text| {
-                                Line::from(vec![
-                                    Span::styled("✗ ", Style::new().fg(LOGO_CORAL)),
-                                    Span::styled(text, Style::new().fg(LOGO_CORAL)),
-                                ])
-                            }).collect()
+                            let wrapped =
+                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                            wrapped
+                                .into_iter()
+                                .map(|text| {
+                                    Line::from(vec![
+                                        Span::styled("✗ ", Style::new().fg(LOGO_CORAL)),
+                                        Span::styled(text, Style::new().fg(LOGO_CORAL)),
+                                    ])
+                                })
+                                .collect()
                         }
                     }
                 })
@@ -527,14 +592,14 @@ fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(paragraph, area);
 
     // Update total_rendered_lines for accurate scroll calculations
-    if let Some(total_lines) = computed_total_lines {
-        if let Some(session) = app.sessions.selected_session_mut() {
-            session.total_rendered_lines = total_lines;
-        }
+    if let Some(total_lines) = computed_total_lines
+        && let Some(session) = app.sessions.selected_session_mut()
+    {
+        session.total_rendered_lines = total_lines;
     }
 }
-/// Wrap text to fit within width, preserving words where possible
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
+/// Wrap text to fit within width, preserving words where possible.
+pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
     }
@@ -607,7 +672,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     result
 }
 
-fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
     use crate::app::ClickRegion;
 
     let is_insert = app.input_mode == InputMode::Insert;
@@ -667,7 +732,10 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
 
         // Add hint when attachment is selected
         if app.selected_attachment.is_some() {
-            spans.push(Span::styled(" (backspace remove · ↓ cancel)", Style::new().fg(TEXT_DIM)));
+            spans.push(Span::styled(
+                " (backspace remove · ↓ cancel)",
+                Style::new().fg(TEXT_DIM),
+            ));
         }
 
         lines.push(Line::from(spans));
@@ -706,22 +774,23 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Calculate permission mode text and model info for click region sizing
     // We need to extract these values before building the mode_line to avoid borrow conflicts
-    let (permission_mode_width, model_start_x, model_name_len) = if let Some(session) = app.selected_session() {
-        let mode = session.permission_mode;
-        let mode_str = match mode {
-            PermissionMode::Normal => "normal",
-            PermissionMode::Plan => "plan",
-            PermissionMode::AcceptAll => "accept all",
+    let (permission_mode_width, model_start_x, model_name_len) =
+        if let Some(session) = app.selected_session() {
+            let mode = session.permission_mode;
+            let mode_str = match mode {
+                PermissionMode::Normal => "normal",
+                PermissionMode::Plan => "plan",
+                PermissionMode::AcceptAll => "accept all",
+            };
+            // "[tab] " is 6 chars, then the mode text
+            let perm_width = 6 + mode_str.len();
+            // Model starts after permission mode + 2 spaces
+            let model_x = area.x + perm_width as u16 + 2;
+            let model_len = session.current_model_name().map(|n| n.len());
+            (perm_width, model_x, model_len)
+        } else {
+            (0, area.x, None)
         };
-        // "[tab] " is 6 chars, then the mode text
-        let perm_width = 6 + mode_str.len();
-        // Model starts after permission mode + 2 spaces
-        let model_x = area.x + perm_width as u16 + 2;
-        let model_len = session.current_model_name().map(|n| n.len());
-        (perm_width, model_x, model_len)
-    } else {
-        (0, area.x, None)
-    };
 
     // Add permission mode indicator line
     // We need to clone/own the strings to avoid borrowing app during the Line construction
@@ -740,7 +809,10 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         // Add model info if available - clone the string to own it
         if let Some(model_name) = session.current_model_name() {
             spans.push(Span::styled("  [m] ", Style::new().fg(TEXT_DIM)));
-            spans.push(Span::styled(model_name.to_string(), Style::new().fg(LOGO_LIGHT_BLUE)));
+            spans.push(Span::styled(
+                model_name.to_string(),
+                Style::new().fg(LOGO_LIGHT_BLUE),
+            ));
         }
 
         Line::from(spans)
@@ -762,23 +834,15 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 
     // Permission mode toggle: "[tab] <mode>"
-    app.click_areas.permission_mode = ClickRegion::new(
-        area.x,
-        mode_line_y,
-        permission_mode_width as u16,
-        1,
-    );
+    app.click_areas.permission_mode =
+        ClickRegion::new(area.x, mode_line_y, permission_mode_width as u16, 1);
 
     // Model selector: "[m] <model_name>" - only if there's a model
     if let Some(model_len) = model_name_len {
         // "[m] " is 4 chars + model name length
         let model_width = 4 + model_len;
-        app.click_areas.model_selector = ClickRegion::new(
-            model_start_x,
-            mode_line_y,
-            model_width as u16,
-            1,
-        );
+        app.click_areas.model_selector =
+            ClickRegion::new(model_start_x, mode_line_y, model_width as u16, 1);
     } else {
         app.click_areas.model_selector = ClickRegion::default();
     }
@@ -821,13 +885,21 @@ fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
 
         let cursor_x = area.x + x_offset as u16 + cursor_col as u16;
         let cursor_y = area.y + attachment_line_count as u16 + cursor_line as u16;
-        crate::log::log(&format!("Cursor render: byte_pos={}, char_pos={}, cursor_col={}, cursor_line={}, x={}, y={}, wrapped={:?}", 
-            app.cursor_position, char_position, cursor_col, cursor_line, cursor_x, cursor_y, wrapped));
+        crate::log::log(&format!(
+            "Cursor render: byte_pos={}, char_pos={}, cursor_col={}, cursor_line={}, x={}, y={}, wrapped={:?}",
+            app.cursor_position,
+            char_position,
+            cursor_col,
+            cursor_line,
+            cursor_x,
+            cursor_y,
+            wrapped
+        ));
         frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 }
 
-fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
     if let Some(picker) = &app.folder_picker {
@@ -870,28 +942,33 @@ fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         if picker.entries.is_empty() || (picker.entries.len() == 1 && picker.entries[0].is_parent) {
-            lines.push(Line::styled("  (no subdirectories)", Style::new().fg(TEXT_DIM)));
+            lines.push(Line::styled(
+                "  (no subdirectories)",
+                Style::new().fg(TEXT_DIM),
+            ));
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 }
 
-fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
     if let Some(picker) = &app.worktree_picker {
         // Header
-        lines.push(Line::from(vec![
-            Span::styled("Select worktree or create new", Style::new().fg(TEXT_DIM)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "Select worktree or create new",
+            Style::new().fg(TEXT_DIM),
+        )]));
         lines.push(Line::raw("")); // spacing
 
         // Count cleanable worktrees
-        let cleanable_count = picker.entries.iter()
+        let cleanable_count = picker
+            .entries
+            .iter()
             .filter(|e| !e.is_create_new && e.is_clean && e.is_merged)
             .count();
 
@@ -920,11 +997,11 @@ fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
                 // Status indicators
                 let is_cleanable = entry.is_clean && entry.is_merged;
                 let status_icon = if is_cleanable {
-                    "󰄬 "  // Checkmark - can be cleaned
+                    "󰄬 " // Checkmark - can be cleaned
                 } else if !entry.is_clean {
-                    "󰅖 "  // X - has uncommitted changes
+                    "󰅖 " // X - has uncommitted changes
                 } else {
-                    "󰜛 "  // Unmerged - clean but not merged
+                    "󰜛 " // Unmerged - clean but not merged
                 };
                 let status_color = if is_cleanable {
                     LOGO_MINT
@@ -945,7 +1022,10 @@ fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         if picker.entries.len() == 1 {
-            lines.push(Line::styled("  (no existing worktrees)", Style::new().fg(TEXT_DIM)));
+            lines.push(Line::styled(
+                "  (no existing worktrees)",
+                Style::new().fg(TEXT_DIM),
+            ));
         }
 
         // Help text
@@ -981,19 +1061,19 @@ fn render_worktree_picker(frame: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 }
 
-fn render_branch_input(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_branch_input(frame: &mut Frame, area: Rect, app: &App) {
     use ratatui::layout::Position;
 
     let mut lines: Vec<Line> = vec![];
 
     if let Some(branch_state) = &app.branch_input {
-        let repo_name = branch_state.repo_path
+        let repo_name = branch_state
+            .repo_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -1022,16 +1102,22 @@ fn render_branch_input(frame: &mut Frame, area: Rect, app: &App) {
                 0
             };
 
-            for (i, branch) in branch_state.filtered.iter().enumerate().skip(start).take(max_display) {
+            for (i, branch) in branch_state
+                .filtered
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(max_display)
+            {
                 let is_selected = i == branch_state.selected;
                 let cursor = if is_selected { "> " } else { "  " };
 
                 let (icon, color) = if branch.is_remote {
-                    ("󰅟 ", TEXT_DIM)  // Remote icon
+                    ("󰅟 ", TEXT_DIM) // Remote icon
                 } else if branch.is_current {
-                    ("󰘬 ", LOGO_MINT)  // Current branch indicator
+                    ("󰘬 ", LOGO_MINT) // Current branch indicator
                 } else {
-                    (" ", BRANCH_GREEN)  // Regular branch
+                    (" ", BRANCH_GREEN) // Regular branch
                 };
 
                 let style = if is_selected {
@@ -1068,25 +1154,25 @@ fn render_branch_input(frame: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 
     // Position cursor in input field
     if let Some(branch_state) = &app.branch_input {
         frame.set_cursor_position(Position::new(
-            area.x + 8 + branch_state.cursor_position as u16,  // 8 = "Branch: " length
-            area.y + 2,  // Line 2 (after header and blank line)
+            area.x + 8 + branch_state.cursor_position as u16, // 8 = "Branch: " length
+            area.y + 2, // Line 2 (after header and blank line)
         ));
     }
 }
 
-fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
     if let Some(cleanup) = &app.worktree_cleanup {
-        let repo_name = cleanup.repo_path
+        let repo_name = cleanup
+            .repo_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -1102,11 +1188,20 @@ fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
         let cleanable = cleanup.cleanable_count();
         let selected_count = cleanup.selected_entries().len();
         lines.push(Line::from(vec![
-            Span::styled(format!("{} worktrees", cleanup.entries.len()), Style::new().fg(TEXT_WHITE)),
+            Span::styled(
+                format!("{} worktrees", cleanup.entries.len()),
+                Style::new().fg(TEXT_WHITE),
+            ),
             Span::styled(" · ", Style::new().fg(TEXT_DIM)),
-            Span::styled(format!("{} cleanable", cleanable), Style::new().fg(LOGO_MINT)),
+            Span::styled(
+                format!("{} cleanable", cleanable),
+                Style::new().fg(LOGO_MINT),
+            ),
             Span::styled(" · ", Style::new().fg(TEXT_DIM)),
-            Span::styled(format!("{} selected", selected_count), Style::new().fg(LOGO_CORAL)),
+            Span::styled(
+                format!("{} selected", selected_count),
+                Style::new().fg(LOGO_CORAL),
+            ),
         ]));
         lines.push(Line::raw(""));
 
@@ -1119,18 +1214,28 @@ fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
             let checkbox = if entry.selected { "[x] " } else { "[ ] " };
 
             // Status icons
-            let clean_icon = if entry.is_clean { "󰄬 " } else { "󰅖 " };  // Checkmark or X
-            let clean_color = if entry.is_clean { LOGO_MINT } else { LOGO_CORAL };
+            let clean_icon = if entry.is_clean { "󰄬 " } else { "󰅖 " }; // Checkmark or X
+            let clean_color = if entry.is_clean {
+                LOGO_MINT
+            } else {
+                LOGO_CORAL
+            };
 
-            let merged_icon = if entry.is_merged { "󰘬 " } else { "󰜛 " };  // Merged or unmerged
-            let merged_color = if entry.is_merged { LOGO_MINT } else { LOGO_GOLD };
+            let merged_icon = if entry.is_merged { "󰘬 " } else { "󰜛 " }; // Merged or unmerged
+            let merged_color = if entry.is_merged {
+                LOGO_MINT
+            } else {
+                LOGO_GOLD
+            };
 
             // Branch name or path
-            let display_name = entry.branch.as_ref()
-                .map(|b| b.as_str())
-                .unwrap_or_else(|| entry.path.file_name()
+            let display_name = entry.branch.as_deref().unwrap_or_else(|| {
+                entry
+                    .path
+                    .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("unknown"));
+                    .unwrap_or("unknown")
+            });
 
             let name_style = if is_cursor {
                 Style::new().fg(TEXT_WHITE).bold()
@@ -1142,7 +1247,14 @@ fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
 
             lines.push(Line::from(vec![
                 Span::styled(cursor, Style::new().fg(TEXT_WHITE)),
-                Span::styled(checkbox, if entry.selected { Style::new().fg(LOGO_CORAL) } else { Style::new().fg(TEXT_DIM) }),
+                Span::styled(
+                    checkbox,
+                    if entry.selected {
+                        Style::new().fg(LOGO_CORAL)
+                    } else {
+                        Style::new().fg(TEXT_DIM)
+                    },
+                ),
                 Span::styled(clean_icon, Style::new().fg(clean_color)),
                 Span::styled(merged_icon, Style::new().fg(merged_color)),
                 Span::styled(display_name, name_style),
@@ -1150,15 +1262,29 @@ fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         if cleanup.entries.is_empty() {
-            lines.push(Line::styled("  (no worktrees found)", Style::new().fg(TEXT_DIM)));
+            lines.push(Line::styled(
+                "  (no worktrees found)",
+                Style::new().fg(TEXT_DIM),
+            ));
         }
 
         // Options
         lines.push(Line::raw(""));
-        let branch_checkbox = if cleanup.delete_branches { "[x]" } else { "[ ]" };
+        let branch_checkbox = if cleanup.delete_branches {
+            "[x]"
+        } else {
+            "[ ]"
+        };
         lines.push(Line::from(vec![
             Span::styled("  ", Style::new()),
-            Span::styled(branch_checkbox, if cleanup.delete_branches { Style::new().fg(LOGO_CORAL) } else { Style::new().fg(TEXT_DIM) }),
+            Span::styled(
+                branch_checkbox,
+                if cleanup.delete_branches {
+                    Style::new().fg(LOGO_CORAL)
+                } else {
+                    Style::new().fg(TEXT_DIM)
+                },
+            ),
             Span::styled(" Delete branches too ", Style::new().fg(TEXT_DIM)),
             Span::styled("[b]", Style::new().fg(TEXT_WHITE)),
         ]));
@@ -1193,13 +1319,12 @@ fn render_worktree_cleanup(frame: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 }
 
-fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
     use crate::app::AgentPickerState;
     use crate::session::AgentType;
 
@@ -1207,7 +1332,8 @@ fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
 
     if let Some(picker) = &app.agent_picker {
         // Header with selected directory
-        let folder_name = picker.cwd
+        let folder_name = picker
+            .cwd
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -1224,7 +1350,7 @@ fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
             let cursor = if is_selected { "> " } else { "  " };
 
             let (icon, color) = match agent_type {
-                AgentType::ClaudeCode => ("", LOGO_CORAL),   // Anthropic orange-ish
+                AgentType::ClaudeCode => ("", LOGO_CORAL), // Anthropic orange-ish
                 AgentType::GeminiCli => ("", LOGO_LIGHT_BLUE), // Google blue
             };
 
@@ -1245,20 +1371,20 @@ fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 }
 
-fn render_session_picker(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_session_picker(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
     if let Some(picker) = &app.session_picker {
         // Header
-        lines.push(Line::from(vec![
-            Span::styled("Resume session", Style::new().fg(LOGO_LIGHT_BLUE).bold()),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "Resume session",
+            Style::new().fg(LOGO_LIGHT_BLUE).bold(),
+        )]));
         lines.push(Line::raw("")); // spacing
 
         // List sessions
@@ -1267,12 +1393,14 @@ fn render_session_picker(frame: &mut Frame, area: Rect, app: &App) {
             let cursor = if is_selected { "> " } else { "  " };
 
             // First line: cursor + folder name + timestamp
-            let folder_name = session.cwd
+            let folder_name = session
+                .cwd
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
-            let timestamp = session.timestamp
+            let timestamp = session
+                .timestamp
                 .map(|t| t.format("%b %d %H:%M").to_string())
                 .unwrap_or_default();
 
@@ -1317,68 +1445,72 @@ fn render_session_picker(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         if picker.sessions.is_empty() {
-            lines.push(Line::styled("  (no resumable sessions found)", Style::new().fg(TEXT_DIM)));
+            lines.push(Line::styled(
+                "  (no resumable sessions found)",
+                Style::new().fg(TEXT_DIM),
+            ));
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(TEXT_WHITE));
+    let paragraph = Paragraph::new(lines).style(Style::new().fg(TEXT_WHITE));
 
     frame.render_widget(paragraph, area);
 }
 
-fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
-    if let Some(session) = app.selected_session() {
-        if let Some(perm) = &session.pending_permission {
-            // Header - strip backticks from title
-            let title = perm.title.clone()
-                .unwrap_or_else(|| "Tool".to_string())
-                .replace('`', "");
+    if let Some(session) = app.selected_session()
+        && let Some(perm) = &session.pending_permission
+    {
+        // Header - strip backticks from title
+        let title = perm
+            .title
+            .clone()
+            .unwrap_or_else(|| "Tool".to_string())
+            .replace('`', "");
+        lines.push(Line::from(vec![
+            Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)),
+            Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
+            Span::styled(title, Style::new().fg(TEXT_WHITE)),
+        ]));
+        lines.push(Line::raw(""));
+
+        // Options
+        for (i, option) in perm.options.iter().enumerate() {
+            let is_selected = i == perm.selected;
+            let cursor = if is_selected { "> " } else { "  " };
+
+            let kind_icon = match option.kind {
+                PermissionKind::AllowOnce => "✓",
+                PermissionKind::AllowAlways => "✓✓",
+                PermissionKind::RejectOnce => "✗",
+                PermissionKind::RejectAlways => "✗✗",
+                PermissionKind::Unknown => "?",
+            };
+
+            let style = if is_selected {
+                Style::new().fg(TEXT_WHITE).bold()
+            } else {
+                Style::new().fg(TEXT_DIM)
+            };
+
             lines.push(Line::from(vec![
-                Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)),
-                Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
-                Span::styled(title, Style::new().fg(TEXT_WHITE)),
-            ]));
-            lines.push(Line::raw(""));
-
-            // Options
-            for (i, option) in perm.options.iter().enumerate() {
-                let is_selected = i == perm.selected;
-                let cursor = if is_selected { "> " } else { "  " };
-
-                let kind_icon = match option.kind {
-                    PermissionKind::AllowOnce => "✓",
-                    PermissionKind::AllowAlways => "✓✓",
-                    PermissionKind::RejectOnce => "✗",
-                    PermissionKind::RejectAlways => "✗✗",
-                    PermissionKind::Unknown => "?",
-                };
-
-                let style = if is_selected {
-                    Style::new().fg(TEXT_WHITE).bold()
-                } else {
-                    Style::new().fg(TEXT_DIM)
-                };
-
-                lines.push(Line::from(vec![
-                    Span::styled(cursor, style),
-                    Span::styled(kind_icon, style),
-                    Span::styled(" ", style),
-                    Span::styled(&option.name, style),
-                ]));
-            }
-
-            // Help text
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled("[y/Enter]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" allow • ", Style::new().fg(TEXT_DIM)),
-                Span::styled("[n/Esc]", Style::new().fg(TEXT_WHITE)),
-                Span::styled(" deny", Style::new().fg(TEXT_DIM)),
+                Span::styled(cursor, style),
+                Span::styled(kind_icon, style),
+                Span::styled(" ", style),
+                Span::styled(&option.name, style),
             ]));
         }
+
+        // Help text
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("[y/Enter]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" allow • ", Style::new().fg(TEXT_DIM)),
+            Span::styled("[n/Esc]", Style::new().fg(TEXT_WHITE)),
+            Span::styled(" deny", Style::new().fg(TEXT_DIM)),
+        ]));
     }
 
     let block = Block::default()
@@ -1389,82 +1521,82 @@ fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![];
 
-    if let Some(session) = app.selected_session() {
-        if let Some(question) = &session.pending_question {
-            // Header with question
-            lines.push(Line::from(vec![
-                Span::styled("? ", Style::new().fg(Color::Cyan)),
-                Span::styled(&question.question, Style::new().fg(TEXT_WHITE).bold()),
-            ]));
-            lines.push(Line::raw(""));
+    if let Some(session) = app.selected_session()
+        && let Some(question) = &session.pending_question
+    {
+        // Header with question
+        lines.push(Line::from(vec![
+            Span::styled("? ", Style::new().fg(Color::Cyan)),
+            Span::styled(&question.question, Style::new().fg(TEXT_WHITE).bold()),
+        ]));
+        lines.push(Line::raw(""));
 
-            // Options if present
-            if !question.options.is_empty() {
-                for (i, option) in question.options.iter().enumerate() {
-                    let is_selected = i == question.selected;
-                    let cursor = if is_selected { "> " } else { "  " };
+        // Options if present
+        if !question.options.is_empty() {
+            for (i, option) in question.options.iter().enumerate() {
+                let is_selected = i == question.selected;
+                let cursor = if is_selected { "> " } else { "  " };
 
-                    let style = if is_selected {
-                        Style::new().fg(TEXT_WHITE).bold()
-                    } else {
-                        Style::new().fg(TEXT_DIM)
-                    };
+                let style = if is_selected {
+                    Style::new().fg(TEXT_WHITE).bold()
+                } else {
+                    Style::new().fg(TEXT_DIM)
+                };
 
-                    lines.push(Line::from(vec![
-                        Span::styled(cursor, style),
-                        Span::styled(&option.label, style),
-                    ]));
-                }
-                lines.push(Line::raw(""));
-            }
-
-            // Input field
-            let input_prefix = "> ";
-            let cursor_pos = question.cursor_position;
-            let input = &question.input;
-
-            // Show cursor in input
-            let before_cursor = &input[..cursor_pos];
-            let at_cursor = if cursor_pos < input.len() {
-                &input[cursor_pos..cursor_pos + 1]
-            } else {
-                " "
-            };
-            let after_cursor = if cursor_pos < input.len() {
-                &input[cursor_pos + 1..]
-            } else {
-                ""
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled(input_prefix, Style::new().fg(Color::Cyan)),
-                Span::styled(before_cursor, Style::new().fg(TEXT_WHITE)),
-                Span::styled(at_cursor, Style::new().fg(Color::Black).bg(TEXT_WHITE)),
-                Span::styled(after_cursor, Style::new().fg(TEXT_WHITE)),
-            ]));
-
-            // Help text
-            lines.push(Line::raw(""));
-            if question.options.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
-                    Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
-                    Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
-                    Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled("[↑/↓]", Style::new().fg(TEXT_WHITE)),
-                    Span::styled(" select • ", Style::new().fg(TEXT_DIM)),
-                    Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
-                    Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
-                    Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
-                    Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+                    Span::styled(cursor, style),
+                    Span::styled(&option.label, style),
                 ]));
             }
+            lines.push(Line::raw(""));
+        }
+
+        // Input field
+        let input_prefix = "> ";
+        let cursor_pos = question.cursor_position;
+        let input = &question.input;
+
+        // Show cursor in input
+        let before_cursor = &input[..cursor_pos];
+        let at_cursor = if cursor_pos < input.len() {
+            &input[cursor_pos..cursor_pos + 1]
+        } else {
+            " "
+        };
+        let after_cursor = if cursor_pos < input.len() {
+            &input[cursor_pos + 1..]
+        } else {
+            ""
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(input_prefix, Style::new().fg(Color::Cyan)),
+            Span::styled(before_cursor, Style::new().fg(TEXT_WHITE)),
+            Span::styled(at_cursor, Style::new().fg(Color::Black).bg(TEXT_WHITE)),
+            Span::styled(after_cursor, Style::new().fg(TEXT_WHITE)),
+        ]));
+
+        // Help text
+        lines.push(Line::raw(""));
+        if question.options.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+                Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
+                Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+                Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("[↑/↓]", Style::new().fg(TEXT_WHITE)),
+                Span::styled(" select • ", Style::new().fg(TEXT_DIM)),
+                Span::styled("[Enter]", Style::new().fg(TEXT_WHITE)),
+                Span::styled(" submit • ", Style::new().fg(TEXT_DIM)),
+                Span::styled("[Esc]", Style::new().fg(TEXT_WHITE)),
+                Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+            ]));
         }
     }
 
@@ -1476,13 +1608,19 @@ fn render_question_dialog(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_help_popup(frame: &mut Frame, area: Rect) {
+#[allow(clippy::vec_init_then_push)]
+pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     // Calculate centered popup area
     let popup_width = 50u16;
     let popup_height = 24u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
 
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
@@ -1490,13 +1628,17 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line> = vec![];
 
     // Title
-    lines.push(Line::from(vec![
-        Span::styled("Keyboard Shortcuts", Style::new().fg(TEXT_WHITE).bold()),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "Keyboard Shortcuts",
+        Style::new().fg(TEXT_WHITE).bold(),
+    )]));
     lines.push(Line::raw(""));
 
     // Normal mode
-    lines.push(Line::styled("Normal Mode", Style::new().fg(LOGO_LIGHT_BLUE).bold()));
+    lines.push(Line::styled(
+        "Normal Mode",
+        Style::new().fg(LOGO_LIGHT_BLUE).bold(),
+    ));
     lines.push(Line::from(vec![
         Span::styled("  i       ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Enter insert mode", Style::new().fg(TEXT_DIM)),
@@ -1548,7 +1690,10 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
     lines.push(Line::raw(""));
 
     // Insert mode
-    lines.push(Line::styled("Insert Mode", Style::new().fg(LOGO_MINT).bold()));
+    lines.push(Line::styled(
+        "Insert Mode",
+        Style::new().fg(LOGO_MINT).bold(),
+    ));
     lines.push(Line::from(vec![
         Span::styled("  Enter   ", Style::new().fg(TEXT_WHITE)),
         Span::styled("Send message", Style::new().fg(TEXT_DIM)),

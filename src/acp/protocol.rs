@@ -176,7 +176,9 @@ pub struct PromptParams {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         #[serde(rename = "mimeType")]
         mime_type: String,
@@ -215,7 +217,9 @@ pub struct SessionUpdateParams {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UpdateContent {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -253,7 +257,9 @@ pub enum PlanStatus {
 /// Session update variants - manually deserialize to handle unknown types gracefully
 #[derive(Debug, Clone)]
 pub enum SessionUpdate {
-    AgentMessageChunk { content: UpdateContent },
+    AgentMessageChunk {
+        content: UpdateContent,
+    },
     AgentThoughtChunk,
     ToolCall {
         tool_call_id: String,
@@ -266,12 +272,16 @@ pub enum SessionUpdate {
         tool_call_id: String,
         status: String,
     },
-    Plan { entries: Vec<PlanEntry> },
+    Plan {
+        entries: Vec<PlanEntry>,
+    },
     CurrentModeUpdate {
         current_mode_id: String,
     },
     AvailableCommandsUpdate,
-    Other { raw_type: Option<String> },
+    Other {
+        raw_type: Option<String>,
+    },
 }
 
 impl<'de> serde::Deserialize<'de> for SessionUpdate {
@@ -284,14 +294,12 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
 
         match update_type {
             Some("agent_message_chunk") => {
-                let content = serde_json::from_value(
-                    value.get("content").cloned().unwrap_or(Value::Null)
-                ).unwrap_or(UpdateContent::Other);
+                let content =
+                    serde_json::from_value(value.get("content").cloned().unwrap_or(Value::Null))
+                        .unwrap_or(UpdateContent::Other);
                 Ok(SessionUpdate::AgentMessageChunk { content })
             }
-            Some("agent_thought_chunk") => {
-                Ok(SessionUpdate::AgentThoughtChunk)
-            }
+            Some("agent_thought_chunk") => Ok(SessionUpdate::AgentThoughtChunk),
             Some("tool_call") => {
                 // Extract description from rawInput if present
                 // Priority: description > file_path > command > pattern > query
@@ -299,7 +307,8 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                 let raw_description = raw_input
                     .and_then(|v| {
                         // Try description first (Task tool)
-                        v.get("description").and_then(|d| d.as_str())
+                        v.get("description")
+                            .and_then(|d| d.as_str())
                             // Then file_path (Read/Write/Edit tools)
                             .or_else(|| v.get("file_path").and_then(|d| d.as_str()))
                             // Then command (Bash tool)
@@ -313,35 +322,52 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                     })
                     .map(|s| s.to_string());
                 Ok(SessionUpdate::ToolCall {
-                    tool_call_id: value.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    title: value.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    status: value.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    tool_call_id: value
+                        .get("toolCallId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    title: value
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    status: value
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     raw_description,
                 })
             }
-            Some("tool_call_update") => {
-                Ok(SessionUpdate::ToolCallUpdate {
-                    tool_call_id: value.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    status: value.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                })
-            }
+            Some("tool_call_update") => Ok(SessionUpdate::ToolCallUpdate {
+                tool_call_id: value
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                status: value
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            }),
             Some("plan") => {
-                let entries = value.get("entries")
+                let entries = value
+                    .get("entries")
                     .and_then(|v| serde_json::from_value::<Vec<PlanEntry>>(v.clone()).ok())
                     .unwrap_or_default();
                 Ok(SessionUpdate::Plan { entries })
             }
-            Some("current_mode_update") => {
-                Ok(SessionUpdate::CurrentModeUpdate {
-                    current_mode_id: value.get("currentModeId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                })
-            }
-            Some("available_commands_update") => {
-                Ok(SessionUpdate::AvailableCommandsUpdate)
-            }
-            other => {
-                Ok(SessionUpdate::Other { raw_type: other.map(|s| s.to_string()) })
-            }
+            Some("current_mode_update") => Ok(SessionUpdate::CurrentModeUpdate {
+                current_mode_id: value
+                    .get("currentModeId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            }),
+            Some("available_commands_update") => Ok(SessionUpdate::AvailableCommandsUpdate),
+            other => Ok(SessionUpdate::Other {
+                raw_type: other.map(|s| s.to_string()),
+            }),
         }
     }
 }
@@ -576,8 +602,15 @@ impl RequestPermissionResponse {
 #[derive(Debug)]
 pub enum IncomingMessage {
     Response(JsonRpcResponse),
-    Notification { method: String, params: Option<Value> },
-    Request { id: u64, method: String, params: Option<Value> },
+    Notification {
+        method: String,
+        params: Option<Value>,
+    },
+    Request {
+        id: u64,
+        method: String,
+        params: Option<Value>,
+    },
 }
 
 impl IncomingMessage {
