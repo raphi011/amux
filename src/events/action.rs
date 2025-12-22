@@ -127,6 +127,10 @@ pub enum Action {
         option_id: Option<PermissionOptionId>,
     },
 
+    // === Prompt control ===
+    /// Cancel the running prompt
+    CancelPrompt,
+
     // === Questions (ask_user) ===
     /// Submit answer to question
     SubmitAnswer,

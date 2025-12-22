@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::McpServerConfig;
+use crate::notification::{NotificationConfig, NotificationManager};
 use crate::picker::Picker;
 use crate::session::{AgentAvailability, AgentType, Session, SessionManager};
 use crate::tui::interaction::InteractionRegistry;
@@ -193,6 +194,44 @@ impl AgentPickerState {
         self.selected_item()
             .map(|a| a.is_available())
             .unwrap_or(false)
+    }
+
+    /// Check if any agent is available
+    #[allow(dead_code)]
+    pub fn any_available(&self) -> bool {
+        self.agents.iter().any(|a| a.is_available())
+    }
+
+    /// Select next available agent (skips unavailable ones)
+    pub fn select_next_available(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+        let len = self.agents.len();
+        for offset in 1..=len {
+            let idx = (self.selected + offset) % len;
+            if self.agents[idx].is_available() {
+                self.selected = idx;
+                return;
+            }
+        }
+        // No available agents found, stay in place
+    }
+
+    /// Select previous available agent (skips unavailable ones)
+    pub fn select_prev_available(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+        let len = self.agents.len();
+        for offset in 1..=len {
+            let idx = (self.selected + len - offset) % len;
+            if self.agents[idx].is_available() {
+                self.selected = idx;
+                return;
+            }
+        }
+        // No available agents found, stay in place
     }
 }
 
@@ -610,6 +649,8 @@ pub struct App {
     pub bash_mode: bool,
     /// Currently running bash command (for timer display)
     pub running_bash_command: Option<RunningBashCommand>,
+    /// Desktop notification manager
+    pub notifications: NotificationManager,
 }
 
 impl App {
@@ -617,6 +658,7 @@ impl App {
         start_dir: PathBuf,
         worktree_config: WorktreeConfig,
         mcp_servers: Vec<McpServerConfig>,
+        notification_config: NotificationConfig,
     ) -> Self {
         Self {
             sessions: SessionManager::new(),
@@ -647,6 +689,7 @@ impl App {
             mcp_servers,
             bash_mode: false,
             running_bash_command: None,
+            notifications: NotificationManager::new(notification_config),
         }
     }
 

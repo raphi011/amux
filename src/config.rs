@@ -34,6 +34,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::notification::NotificationConfig;
 use crate::session::AgentType;
 
 /// Main configuration structure.
@@ -56,6 +57,42 @@ pub struct Config {
     /// MCP servers to make available to agent sessions
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+
+    /// Desktop notification settings
+    #[serde(default)]
+    pub notifications: NotificationConfigFile,
+}
+
+/// Notification configuration from config file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct NotificationConfigFile {
+    /// Whether notifications are enabled
+    pub enabled: bool,
+    /// Seconds to wait after work completes before sending idle notification
+    pub idle_delay_secs: u64,
+    /// Minimum seconds between same notification type (prevents spam)
+    pub dedupe_interval_secs: u64,
+}
+
+impl Default for NotificationConfigFile {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            idle_delay_secs: 5,
+            dedupe_interval_secs: 30,
+        }
+    }
+}
+
+impl From<NotificationConfigFile> for NotificationConfig {
+    fn from(file: NotificationConfigFile) -> Self {
+        Self {
+            enabled: file.enabled,
+            idle_delay_secs: file.idle_delay_secs,
+            dedupe_interval_secs: file.dedupe_interval_secs,
+        }
+    }
 }
 
 /// MCP server configuration

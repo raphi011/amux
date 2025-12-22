@@ -714,6 +714,10 @@ where
                                         let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
                                     }
                                     session.state = SessionState::Idle;
+                                    session.add_output(
+                                        "Cancelled".to_string(),
+                                        OutputType::SystemMessage,
+                                    );
                                 }
                                 continue;
                             }
@@ -920,6 +924,22 @@ where
                                     // Normal mode keys
                                     match key.code {
                                         KeyCode::Char('q') => return Ok(()),
+                                        KeyCode::Esc => {
+                                            // Cancel running prompt
+                                            if let Some(session) = app.sessions.selected_session_mut()
+                                                && session.state == SessionState::Prompting
+                                            {
+                                                let session_id = session.id.clone();
+                                                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                                    let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
+                                                }
+                                                session.state = SessionState::Idle;
+                                                session.add_output(
+                                                    "Cancelled".to_string(),
+                                                    OutputType::SystemMessage,
+                                                );
+                                            }
+                                        }
                                         KeyCode::Char('?') => {
                                             app.open_help();
                                         }
@@ -1309,12 +1329,12 @@ where
                                     }
                                     KeyCode::Char('j') | KeyCode::Down => {
                                         if let Some(picker) = &mut app.agent_picker {
-                                            picker.select_next();
+                                            picker.select_next_available();
                                         }
                                     }
                                     KeyCode::Char('k') | KeyCode::Up => {
                                         if let Some(picker) = &mut app.agent_picker {
-                                            picker.select_prev();
+                                            picker.select_prev_available();
                                         }
                                     }
                                     KeyCode::Enter => {
@@ -2397,6 +2417,7 @@ async fn send_prompt(
         } else {
             session.add_output(format!("> {}", text), OutputType::UserInput);
         }
+        session.scroll_to_bottom(); // Scroll to show the user's input
         session.state = SessionState::Prompting;
         session.idle_notified = false; // Reset so we notify when this prompt completes
 
@@ -2547,14 +2568,14 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 match update {
                     SessionUpdate::AgentMessageChunk { content } => {
                         if let acp::protocol::UpdateContent::Text { text } = content {
-                            // Don't clear thought here - keep showing it until a new thought arrives
-                            // or the prompt completes
+                            // Finalize any current thought so next thought starts a new line
+                            session.finalize_thought();
                             session.append_text(text);
                         }
                     }
                     SessionUpdate::AgentThoughtChunk { content } => {
                         if let acp::protocol::UpdateContent::Text { text } = content {
-                            session.append_thought(text);
+                            session.set_thought(text);
                         }
                     }
                     SessionUpdate::ToolCall {
@@ -2563,6 +2584,9 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         raw_json,
                         ..
                     } => {
+                        // Finalize any current thought so next thought starts a new line
+                        session.finalize_thought();
+
                         // Use title directly, falling back to "Tool" if empty/undefined
                         let name = title
                             .filter(|t| {

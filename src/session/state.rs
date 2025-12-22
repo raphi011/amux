@@ -339,6 +339,10 @@ pub struct Session {
     pub input_buffer: String,
     /// Per-session cursor position in input buffer
     pub input_cursor: usize,
+    /// Current thought text from agent (ephemeral, cleared when response arrives)
+    pub current_thought: Option<String>,
+    /// Whether we've sent an idle notification for this session (reset on new prompt)
+    pub idle_notified: bool,
 }
 
 /// Re-export ModelInfo for use in session
@@ -353,8 +357,10 @@ pub struct OutputLine {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputType {
     Text,      // Agent response text
-    Thought,   // Agent thought/reasoning text (dimmed)
     UserInput, // User's prompt
+    Thought {
+        finalized: bool, // Whether this thought line is finalized (no more updates)
+    },
     ToolCall {
         tool_call_id: String,
         name: String,
@@ -368,8 +374,9 @@ pub enum OutputType {
     DiffContext, // Context line in diff (dim)
     DiffHeader,  // Diff header line (e.g. "Added 18 lines, removed 11")
     Error,
-    BashCommand, // User's bash command (prefixed with !)
-    BashOutput,  // Output from a bash command
+    BashCommand,   // User's bash command (prefixed with !)
+    BashOutput,    // Output from a bash command
+    SystemMessage, // System messages (e.g., "Cancelled")
 }
 
 impl Session {
@@ -408,6 +415,8 @@ impl Session {
             saved_input: None,
             input_buffer: String::new(),
             input_cursor: 0,
+            current_thought: None,
+            idle_notified: false,
         }
     }
 
@@ -561,18 +570,47 @@ impl Session {
         self.add_output(text, OutputType::Text);
     }
 
-    /// Append thought text to the last thought line, or create new thought line
-    pub fn append_thought(&mut self, text: String) {
-        if let Some(last) = self.output.last_mut() {
-            // Only append to non-empty thought lines
-            if matches!(last.line_type, OutputType::Thought) && !last.content.is_empty() {
-                last.content.push_str(&text);
-                self.last_activity = Some(Instant::now());
-                return;
-            }
+    /// Set or replace the current thought
+    /// If the last output line is an unfinalized Thought, replaces its content entirely
+    /// Otherwise creates a new thought line
+    pub fn set_thought(&mut self, text: String) {
+        // Update the ephemeral current_thought for title bar
+        self.current_thought = Some(text.clone());
+
+        // Check if the last output line is an unfinalized Thought - if so, replace it
+        if let Some(last) = self.output.last_mut()
+            && matches!(last.line_type, OutputType::Thought { finalized: false })
+        {
+            last.content = text;
+            self.last_activity = Some(Instant::now());
+            return;
         }
-        // No thought line to append to, create new one
-        self.add_output(text, OutputType::Thought);
+
+        // Create a new thought line
+        self.output.push(OutputLine {
+            content: text,
+            line_type: OutputType::Thought { finalized: false },
+        });
+        self.last_activity = Some(Instant::now());
+    }
+
+    /// Finalize the current thought line (called when non-thought content arrives)
+    /// Next thought chunk will create a new line
+    pub fn finalize_thought(&mut self) {
+        // Clear the ephemeral thought for title bar
+        self.current_thought = None;
+
+        // Mark the last thought line as finalized
+        if let Some(last) = self.output.last_mut()
+            && let OutputType::Thought { finalized } = &mut last.line_type
+        {
+            *finalized = true;
+        }
+    }
+
+    /// Clear the current thought (called when response/tool output arrives)
+    pub fn clear_thought(&mut self) {
+        self.current_thought = None;
     }
 
     /// Check if a tool call with this ID already exists
@@ -741,6 +779,8 @@ impl Session {
             saved_input: None,
             input_buffer: String::new(),
             input_cursor: 0,
+            current_thought: None,
+            idle_notified: false,
         }
     }
 }

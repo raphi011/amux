@@ -5,6 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode};
+use crate::session::SessionState;
 
 use super::Action;
 
@@ -49,8 +50,18 @@ fn handle_normal_mode(app: &App, key: KeyEvent) -> Action {
         return handle_question_mode(app, key);
     }
 
+    // Check if agent is currently prompting (for cancel support)
+    let is_prompting = app
+        .sessions
+        .selected_session()
+        .map(|s| s.state == SessionState::Prompting)
+        .unwrap_or(false);
+
     // Normal navigation mode
     match key.code {
+        // Cancel running prompt with Esc
+        KeyCode::Esc if is_prompting => Action::CancelPrompt,
+
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('?') => Action::OpenHelp,
         KeyCode::Char('B') => Action::OpenBugReport,

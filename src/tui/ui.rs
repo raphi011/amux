@@ -75,6 +75,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .map(|s| s.pending_question.is_some())
         .unwrap_or(false);
 
+    // Title bar is always 2 lines: 1 for content + 1 for padding
+    let title_bar_height = 2;
+
     // Render vertical separator
     render_separator(frame, content_layout[2]);
 
@@ -118,25 +121,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Right side: title bar + output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
-            Constraint::Length(2), // Title bar + padding
-            Constraint::Min(0),    // Output
-            Constraint::Length(6), // Permission dialog
+            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
+            Constraint::Min(0),                   // Output
+            Constraint::Length(6),                // Permission dialog
         ])
         .split(content_layout[4])
     } else if has_question {
         Layout::vertical([
-            Constraint::Length(2),               // Title bar + padding
-            Constraint::Min(0),                  // Output
-            Constraint::Length(question_height), // Question dialog
+            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
+            Constraint::Min(0),                   // Output
+            Constraint::Length(question_height),  // Question dialog
         ])
         .split(content_layout[4])
     } else {
         Layout::vertical([
-            Constraint::Length(2),                   // Title bar + padding
-            Constraint::Min(0),                      // Output
-            Constraint::Length(1),                   // Empty line above separator
-            Constraint::Length(1),                   // Horizontal separator
-            Constraint::Length(1),                   // Empty line below separator
+            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
+            Constraint::Min(0),                   // Output
+            Constraint::Length(1),                // Empty line above separator
+            Constraint::Length(1),                // Horizontal separator
+            Constraint::Length(1),                // Empty line below separator
             Constraint::Length(input_height.max(2)), // Input bar (min 2 lines: input + mode)
         ])
         .split(content_layout[4])
@@ -212,50 +215,62 @@ fn render_horizontal_separator(frame: &mut Frame, area: Rect) {
 }
 
 fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let line = if let Some(session) = app.selected_session() {
-        if let Some(activity) = session.current_activity() {
-            // Truncate activity to fit in the available width
-            let prefix = "Last Prompt: ";
-            let prefix_len = prefix.len();
-            let max_width = area.width.saturating_sub(2) as usize; // Leave some margin
-            let max_activity_width = max_width.saturating_sub(prefix_len);
-            let display = if activity.len() > max_activity_width {
-                // Find valid char boundary for truncation
-                let mut end = max_activity_width.saturating_sub(1);
-                while end > 0 && !activity.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!("{}…", &activity[..end])
+    if let Some(session) = app.selected_session() {
+        // Priority: 1. thinking, 2. todos (in-progress plan entry), 3. last prompt
+        let (prefix, content, style) = if let Some(ref thought) = session.current_thought
+            && !thought.is_empty()
+        {
+            // Priority 1: Thinking
+            (
+                "Thinking: ",
+                thought.clone(),
+                Style::new().fg(LOGO_GOLD).italic(),
+            )
+        } else if let Some(activity) = session.current_activity() {
+            // Priority 2 & 3: in-progress TODO or last prompt (current_activity handles this)
+            let prefix = if session
+                .plan_entries
+                .iter()
+                .any(|e| e.status == crate::acp::PlanStatus::InProgress)
+            {
+                "TODO: "
             } else {
-                activity
+                "Last Prompt: "
             };
-            // Center the title and use a prominent color
-            let full_display = format!("{}{}", prefix, display);
-            let display_width = full_display.chars().count();
-            let padding = (area.width as usize).saturating_sub(display_width) / 2;
-            Line::from(vec![
-                Span::raw(" ".repeat(padding)),
-                Span::styled(prefix, Style::new().fg(TEXT_DIM)),
-                Span::styled(display, Style::new().fg(LOGO_GOLD).bold()),
-            ])
+            (prefix, activity, Style::new().fg(LOGO_GOLD).bold())
         } else {
-            // No activity - show last prompt as fallback, centered
-            let prefix = "Last Prompt: ";
-            let prefix_len = prefix.len();
-            let name_width = session.name.chars().count() + prefix_len;
-            let padding = (area.width as usize).saturating_sub(name_width) / 2;
-            Line::from(vec![
-                Span::raw(" ".repeat(padding)),
-                Span::styled(prefix, Style::new().fg(TEXT_DIM)),
-                Span::styled(&session.name, Style::new().fg(LOGO_GOLD).bold()),
-            ])
-        }
-    } else {
-        Line::raw("")
-    };
+            // Fallback: session name
+            ("", session.name.clone(), Style::new().fg(LOGO_GOLD).bold())
+        };
 
-    let paragraph = Paragraph::new(line);
-    frame.render_widget(paragraph, area);
+        // Truncate content to fit in available width
+        let prefix_len = prefix.len();
+        let max_width = area.width.saturating_sub(4) as usize; // Leave margin for centering
+        let max_content_width = max_width.saturating_sub(prefix_len);
+        let display = if content.len() > max_content_width {
+            // Find valid char boundary for truncation
+            let mut end = max_content_width.saturating_sub(1);
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &content[..end])
+        } else {
+            content
+        };
+
+        // Calculate padding for centering
+        let text_len = prefix_len + display.len();
+        let padding = (area.width as usize).saturating_sub(text_len) / 2;
+
+        let line = Line::from(vec![
+            Span::raw(" ".repeat(padding)),
+            Span::styled(prefix, Style::new().fg(TEXT_DIM)),
+            Span::styled(display, style),
+        ]);
+
+        let paragraph = Paragraph::new(line);
+        frame.render_widget(paragraph, area);
+    }
 }
 
 fn render_logo(frame: &mut Frame, area: Rect) {
@@ -703,23 +718,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             )
                         }
                     }
-                    OutputType::Thought => {
-                        // Agent thought/reasoning - golden italic text
-                        if output_line.content.is_empty() {
-                            vec![Line::raw("")]
-                        } else {
-                            let wrapped = wrap_text(&output_line.content, inner_width);
-                            wrapped
-                                .into_iter()
-                                .map(|text| {
-                                    Line::from(vec![Span::styled(
-                                        text,
-                                        Style::new().fg(LOGO_GOLD).italic(),
-                                    )])
-                                })
-                                .collect()
-                        }
-                    }
+
                     OutputType::UserInput => {
                         // User prompt - cyan/blue
                         let wrapped = wrap_text(&output_line.content, inner_width);
@@ -732,6 +731,33 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 )])
                             })
                             .collect()
+                    }
+
+                    OutputType::Thought { .. } => {
+                        // Agent thinking - gold italic with lightbulb prefix, rendered as markdown
+                        // Use "● " prefix to match tool call alignment (bullet + space = 2 chars)
+                        let prefix = "● ";
+                        let skin = ratskin::RatSkin::default();
+                        let parsed_lines = skin.parse(
+                            ratskin::RatSkin::parse_text(&output_line.content),
+                            inner_width.saturating_sub(2) as u16,
+                        );
+                        // Start with empty line for padding before thought block
+                        let mut lines: Vec<Line> = vec![Line::from("")];
+                        lines.extend(parsed_lines.into_iter().enumerate().map(|(i, mut line)| {
+                            // Add prefix and apply gold italic styling
+                            let line_prefix = if i == 0 { prefix } else { "  " };
+                            // Prepend the prefix with gold color for the bullet
+                            line.spans
+                                .insert(0, Span::styled(line_prefix, Style::new().fg(LOGO_GOLD)));
+                            // Apply gold italic to all content spans
+                            for span in &mut line.spans[1..] {
+                                span.style =
+                                    span.style.fg(LOGO_GOLD).add_modifier(Modifier::ITALIC);
+                            }
+                            line
+                        }));
+                        lines
                     }
                     OutputType::ToolCall {
                         tool_call_id,
@@ -912,6 +938,20 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                     prefix,
                                     Span::styled(text, Style::new().fg(TEXT_DIM)),
                                 ])
+                            })
+                            .collect()
+                    }
+                    OutputType::SystemMessage => {
+                        // System message - light red/coral, italic
+                        let wrapped =
+                            wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                        wrapped
+                            .into_iter()
+                            .map(|text| {
+                                Line::from(vec![Span::styled(
+                                    text,
+                                    Style::new().fg(LOGO_CORAL).italic(),
+                                )])
                             })
                             .collect()
                     }
