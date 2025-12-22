@@ -1672,8 +1672,12 @@ where
 
                                 match key.code {
                                     KeyCode::Esc => {
-                                        app.exit_insert_mode();
-                                        app.clear_attachments();
+                                        if app.bash_mode {
+                                            app.exit_bash_mode();
+                                        } else {
+                                            app.exit_insert_mode();
+                                            app.clear_attachments();
+                                        }
                                     }
                                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                         // Ctrl+C: clear input but stay in insert mode

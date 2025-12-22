@@ -23,6 +23,8 @@ pub enum Action {
     EnterInsertMode,
     /// Exit to normal mode
     ExitInsertMode,
+    /// Exit bash mode (stays in insert mode)
+    ExitBashMode,
     /// Open help popup
     OpenHelp,
     /// Close help popup

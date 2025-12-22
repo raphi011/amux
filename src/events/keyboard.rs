@@ -206,6 +206,7 @@ fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
         .unwrap_or(false);
 
     match key.code {
+        KeyCode::Esc if app.bash_mode => Action::ExitBashMode,
         KeyCode::Esc if has_permission => Action::DenyPermission,
         KeyCode::Esc => Action::ExitInsertMode,
 

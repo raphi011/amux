@@ -1069,6 +1069,11 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Exit bash mode (stays in insert mode)
+    pub fn exit_bash_mode(&mut self) {
+        self.bash_mode = false;
+    }
+
     /// Add a character to input buffer
     pub fn input_char(&mut self, c: char) {
         // Check if typing '!' as first character enters bash mode
