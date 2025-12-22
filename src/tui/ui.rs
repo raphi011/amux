@@ -360,7 +360,7 @@ fn render_session_entry<'a>(
         ])
     };
 
-    // Second line: agent name + branch + worktree + mode
+    // Second line: agent name + branch + worktree + diff stats + mode
     let agent_name = session.agent_type.display_name();
     let mut second_spans = vec![
         Span::raw("   "),
@@ -373,6 +373,28 @@ fn render_session_entry<'a>(
     // Show worktree indicator (compact)
     if session.is_worktree {
         second_spans.push(Span::styled(" (wt)", Style::new().fg(TEXT_DIM)));
+    }
+
+    // Show diff stats if available (e.g., "+45 -12")
+    if let Some(ref diff_stats) = session.diff_stats
+        && (diff_stats.insertions > 0 || diff_stats.deletions > 0)
+    {
+        second_spans.push(Span::raw("  "));
+        if diff_stats.insertions > 0 {
+            second_spans.push(Span::styled(
+                format!("+{}", diff_stats.insertions),
+                Style::new().fg(DIFF_ADD_FG),
+            ));
+        }
+        if diff_stats.deletions > 0 {
+            if diff_stats.insertions > 0 {
+                second_spans.push(Span::raw(" "));
+            }
+            second_spans.push(Span::styled(
+                format!("-{}", diff_stats.deletions),
+                Style::new().fg(DIFF_REMOVE_FG),
+            ));
+        }
     }
 
     // Show mode if set (e.g., "plan")
@@ -1183,7 +1205,7 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Calculate permission mode text and model info for click region sizing
     // We need to extract these values before building the mode_line to avoid borrow conflicts
-    let (permission_mode_width, model_start_x, model_name_len) =
+    let (permission_mode_start_x, permission_mode_width, model_start_x, model_name_len) =
         if let Some(session) = app.selected_session() {
             let mode = session.permission_mode;
             let mode_str = match mode {
@@ -1192,14 +1214,17 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
                 PermissionMode::AcceptAll => "accept all",
                 PermissionMode::Yolo => "yolo",
             };
+            // Agent name length + "  [tab] " (8 chars)
+            let agent_name_len = session.agent_type.display_name().len();
+            let perm_start = area.x + agent_name_len as u16 + 2; // Agent name + 2 spaces
             // "[tab] " is 6 chars, then the mode text
             let perm_width = 6 + mode_str.len();
             // Model starts after permission mode + 2 spaces
-            let model_x = area.x + perm_width as u16 + 2;
+            let model_x = perm_start + perm_width as u16 + 2;
             let model_len = session.current_model_name().map(|n| n.len());
-            (perm_width, model_x, model_len)
+            (perm_start, perm_width, model_x, model_len)
         } else {
-            (0, area.x, None)
+            (area.x, 0, area.x, None)
         };
 
     // Add permission mode indicator line
@@ -1220,8 +1245,19 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
             PermissionMode::AcceptAll => ("accept all", LOGO_MINT),
             PermissionMode::Yolo => ("yolo", Color::Red),
         };
+
+        // Agent name color based on type
+        let agent_color = match session.agent_type {
+            crate::session::AgentType::ClaudeCode => LOGO_CORAL,
+            crate::session::AgentType::GeminiCli => LOGO_LIGHT_BLUE,
+        };
+
         let mut spans = vec![
-            Span::styled("[tab] ", Style::new().fg(TEXT_DIM)),
+            Span::styled(
+                session.agent_type.display_name(),
+                Style::new().fg(agent_color),
+            ),
+            Span::styled("  [tab] ", Style::new().fg(TEXT_DIM)),
             Span::styled(mode_text, Style::new().fg(mode_color)),
         ];
 
@@ -1273,8 +1309,13 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
             .register_click("input_field", input_bounds, Action::EnterInsertMode);
     }
 
-    // Permission mode toggle: "[tab] <mode>"
-    let perm_bounds = ClickRegion::new(area.x, mode_line_y, permission_mode_width as u16, 1);
+    // Permission mode toggle: "[tab] <mode>" (starts after agent name)
+    let perm_bounds = ClickRegion::new(
+        permission_mode_start_x,
+        mode_line_y,
+        permission_mode_width as u16,
+        1,
+    );
     app.interactions
         .register_click("permission_mode", perm_bounds, Action::CyclePermissionMode);
 

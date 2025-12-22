@@ -93,10 +93,10 @@ impl AgentConnection {
             .stderr(Stdio::null());
 
         // For Claude Code ACP adapter, pass custom Claude executable if available
-        if matches!(agent_type, AgentType::ClaudeCode) {
-            if let Ok(claude_path) = std::env::var("CLAUDE_CODE_EXECUTABLE") {
-                cmd.env("CLAUDE_CODE_EXECUTABLE", claude_path);
-            }
+        if matches!(agent_type, AgentType::ClaudeCode)
+            && let Ok(claude_path) = std::env::var("CLAUDE_CODE_EXECUTABLE")
+        {
+            cmd.env("CLAUDE_CODE_EXECUTABLE", claude_path);
         }
 
         let mut child = cmd.spawn()?;
