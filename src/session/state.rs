@@ -1,4 +1,4 @@
-use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
+use crate::acp::{AgentCommand, AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
@@ -333,6 +333,8 @@ pub struct Session {
     pub permission_mode: PermissionMode,
     pub available_models: Vec<ModelInfo>,
     pub current_model_id: Option<String>,
+    /// Available slash commands from the agent
+    pub available_commands: Vec<AgentCommand>,
     /// Saved input buffer when permission/question dialog interrupts typing
     pub saved_input: Option<(String, usize)>, // (buffer, cursor_position)
     /// Per-session prompt input buffer
@@ -412,6 +414,7 @@ impl Session {
             permission_mode: PermissionMode::default(),
             available_models: vec![],
             current_model_id: None,
+            available_commands: vec![],
             saved_input: None,
             input_buffer: String::new(),
             input_cursor: 0,
@@ -589,7 +592,7 @@ impl Session {
     /// Clear the current thought (called when response/tool output arrives)
     pub fn clear_thought(&mut self) {
         self.current_thought = None;
-        
+
         // Remove the last thought line from output if it exists
         if let Some(last) = self.output.last()
             && matches!(last.line_type, OutputType::Thought)
@@ -761,6 +764,7 @@ impl Session {
             permission_mode: PermissionMode::default(),
             available_models: vec![],
             current_model_id: None,
+            available_commands: vec![],
             saved_input: None,
             input_buffer: String::new(),
             input_cursor: 0,

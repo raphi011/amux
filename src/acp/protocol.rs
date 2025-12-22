@@ -72,6 +72,8 @@ pub struct InitializeParams {
 pub struct ClientCapabilities {
     pub fs: Option<FsCapabilities>,
     pub terminal: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptCapabilities>,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +81,17 @@ pub struct ClientCapabilities {
 pub struct FsCapabilities {
     pub read_text_file: bool,
     pub write_text_file: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_context: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,7 +132,7 @@ pub struct McpEnvVar {
 pub struct McpServer {
     pub name: String,
     pub command: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Command-line arguments (required, can be empty array)
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<McpEnvVar>,
@@ -156,6 +169,13 @@ pub struct LoadSessionParams {
     pub session_id: String,
     pub cwd: String,
     pub mcp_servers: Vec<McpServer>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModeParams {
+    pub session_id: String,
+    pub mode_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +245,7 @@ pub struct PromptResult {
 pub enum StopReason {
     EndTurn,
     MaxTokens,
+    MaxTurnRequests,
     Cancelled,
     Refusal,
     #[serde(other)]
@@ -282,6 +303,51 @@ pub enum PlanStatus {
     Unknown,
 }
 
+/// A slash command available in the session
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentCommand {
+    /// Command name (e.g., "web", "test", "plan")
+    pub name: String,
+    /// Human-readable description of the command
+    pub description: String,
+    /// Optional input specification
+    #[serde(default)]
+    pub input: Option<CommandInput>,
+}
+
+/// Input specification for a command
+#[derive(Debug, Deserialize, Clone)]
+pub struct CommandInput {
+    /// Hint text for the user (e.g., "Enter search query")
+    pub hint: Option<String>,
+}
+
+/// A file location being accessed or modified by a tool call
+#[derive(Debug, Deserialize, Clone)]
+pub struct ToolCallLocation {
+    /// The absolute file path being accessed or modified
+    pub path: String,
+    /// Optional line number within the file
+    pub line: Option<u32>,
+}
+
+/// The kind/category of a tool call
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallKind {
+    Read,
+    Edit,
+    Delete,
+    Move,
+    Search,
+    Execute,
+    Think,
+    Fetch,
+    Other,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Session update variants - manually deserialize to handle unknown types gracefully
 #[derive(Debug, Clone)]
 pub enum SessionUpdate {
@@ -295,6 +361,10 @@ pub enum SessionUpdate {
         tool_call_id: String,
         title: Option<String>,
         status: Option<String>,
+        /// The kind/category of tool (read, edit, execute, etc.)
+        kind: Option<ToolCallKind>,
+        /// File locations being accessed or modified
+        locations: Vec<ToolCallLocation>,
         /// Description from rawInput (e.g., Task tool's description parameter)
         raw_description: Option<String>,
         /// Raw JSON of the tool call update (for debug display)
@@ -310,7 +380,9 @@ pub enum SessionUpdate {
     CurrentModeUpdate {
         current_mode_id: String,
     },
-    AvailableCommandsUpdate,
+    AvailableCommandsUpdate {
+        commands: Vec<AgentCommand>,
+    },
     Other {
         raw_type: Option<String>,
     },
@@ -360,6 +432,15 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                     .map(|s| s.to_string());
                 // Store the raw JSON for debug display
                 let raw_json = serde_json::to_string_pretty(&value).ok();
+                // Parse kind
+                let kind = value
+                    .get("kind")
+                    .and_then(|v| serde_json::from_value::<ToolCallKind>(v.clone()).ok());
+                // Parse locations
+                let locations = value
+                    .get("locations")
+                    .and_then(|v| serde_json::from_value::<Vec<ToolCallLocation>>(v.clone()).ok())
+                    .unwrap_or_default();
                 Ok(SessionUpdate::ToolCall {
                     tool_call_id: value
                         .get("toolCallId")
@@ -374,6 +455,8 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                         .get("status")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    kind,
+                    locations,
                     raw_description,
                     raw_json,
                 })
@@ -404,7 +487,13 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
                     .unwrap_or("")
                     .to_string(),
             }),
-            Some("available_commands_update") => Ok(SessionUpdate::AvailableCommandsUpdate),
+            Some("available_commands_update") => {
+                let commands = value
+                    .get("commands")
+                    .and_then(|v| serde_json::from_value::<Vec<AgentCommand>>(v.clone()).ok())
+                    .unwrap_or_default();
+                Ok(SessionUpdate::AvailableCommandsUpdate { commands })
+            }
             other => Ok(SessionUpdate::Other {
                 raw_type: other.map(|s| s.to_string()),
             }),

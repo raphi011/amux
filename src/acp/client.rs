@@ -18,6 +18,7 @@ use crate::session::AgentType;
 /// Tracked terminal state
 struct Terminal {
     output: String,
+    truncated: bool,
     exit_code: Option<i32>,
     child: Option<Child>,
 }
@@ -76,6 +77,8 @@ pub struct AgentConnection {
     tx: mpsc::Sender<String>,
     /// Track the current prompt request ID for cancellation
     current_prompt_id: Option<u64>,
+    /// Track the current session ID for cancellation
+    current_session_id: Option<String>,
 }
 
 impl AgentConnection {
@@ -467,6 +470,7 @@ impl AgentConnection {
                                                 terminal_id.clone(),
                                                 Terminal {
                                                     output: String::new(),
+                                                    truncated: false,
                                                     exit_code: None,
                                                     child: None,
                                                 },
@@ -539,18 +543,24 @@ impl AgentConnection {
                                                         ));
 
                                                         // Apply output byte limit if specified
-                                                        if let Some(limit) = output_limit
+                                                        let was_truncated = if let Some(limit) =
+                                                            output_limit
                                                             && out.len() > limit
                                                         {
                                                             out = out[out.len() - limit..]
                                                                 .to_string();
-                                                        }
+                                                            true
+                                                        } else {
+                                                            false
+                                                        };
 
                                                         terminal.output = out;
+                                                        terminal.truncated = was_truncated;
                                                         terminal.exit_code = output.status.code();
                                                     }
                                                     Err(e) => {
                                                         terminal.output = format!("Error: {}", e);
+                                                        terminal.truncated = false;
                                                         terminal.exit_code = Some(-1);
                                                     }
                                                 }
@@ -581,13 +591,20 @@ impl AgentConnection {
                                         let terms = terminals.lock().await;
                                         if let Some(terminal) = terms.get(&term_params.terminal_id)
                                         {
+                                            let exit_status = terminal.exit_code.map(|code| {
+                                                serde_json::json!({
+                                                    "exitCode": code,
+                                                    "signal": null
+                                                })
+                                            });
                                             let result = serde_json::json!({
                                                 "jsonrpc": "2.0",
                                                 "id": id,
                                                 "result": {
                                                     "_meta": null,
                                                     "output": terminal.output.clone(),
-                                                    "exitCode": terminal.exit_code,
+                                                    "truncated": terminal.truncated,
+                                                    "exitStatus": exit_status,
                                                 }
                                             });
                                             let json =
@@ -639,15 +656,17 @@ impl AgentConnection {
                                         loop {
                                             let terms = terminals_clone.lock().await;
                                             if let Some(terminal) = terms.get(&terminal_id) {
-                                                if terminal.exit_code.is_some() {
+                                                if let Some(exit_code) = terminal.exit_code {
                                                     // Command completed
                                                     let result = serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id,
                                                         "result": {
                                                             "_meta": null,
-                                                            "exitCode": terminal.exit_code,
-                                                            "timedOut": false,
+                                                            "exitStatus": {
+                                                                "exitCode": exit_code,
+                                                                "signal": null
+                                                            }
                                                         }
                                                     });
                                                     let json = serde_json::to_string(&result)
@@ -680,8 +699,7 @@ impl AgentConnection {
                                                     "id": id,
                                                     "result": {
                                                         "_meta": null,
-                                                        "exitCode": null,
-                                                        "timedOut": true,
+                                                        "exitStatus": null
                                                     }
                                                 });
                                                 let json = serde_json::to_string(&result)
@@ -771,6 +789,7 @@ impl AgentConnection {
             request_id: 0,
             tx,
             current_prompt_id: None,
+            current_session_id: None,
         })
     }
 
@@ -795,6 +814,11 @@ impl AgentConnection {
                     write_text_file: true,
                 }),
                 terminal: Some(true),
+                prompt: Some(PromptCapabilities {
+                    image: Some(true),
+                    audio: None,
+                    embedded_context: None,
+                }),
             },
             client_info: ClientInfo {
                 name: "amux".to_string(),
@@ -858,6 +882,7 @@ impl AgentConnection {
 
         let id = self.next_id();
         self.current_prompt_id = Some(id);
+        self.current_session_id = Some(session_id.to_string());
         let request =
             JsonRpcRequest::new(id, "session/prompt", Some(serde_json::to_value(params)?));
         self.send(request).await
@@ -876,6 +901,7 @@ impl AgentConnection {
 
         let id = self.next_id();
         self.current_prompt_id = Some(id);
+        self.current_session_id = Some(session_id.to_string());
         let request =
             JsonRpcRequest::new(id, "session/prompt", Some(serde_json::to_value(params)?));
         self.send(request).await
@@ -883,13 +909,14 @@ impl AgentConnection {
 
     /// Cancel the current prompt if one is in progress
     pub async fn cancel_prompt(&mut self) -> Result<()> {
-        if let Some(prompt_id) = self.current_prompt_id.take() {
-            // Send $/cancel_request notification
+        if let Some(session_id) = self.current_session_id.take() {
+            self.current_prompt_id.take(); // Clear the prompt ID too
+            // Send session/cancel notification per ACP spec
             let notification = serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "$/cancel_request",
+                "method": "session/cancel",
                 "params": {
-                    "id": prompt_id
+                    "sessionId": session_id
                 }
             });
             let json = serde_json::to_string(&notification)?;
@@ -947,6 +974,21 @@ impl AgentConnection {
         let request = JsonRpcRequest::new(
             self.next_id(),
             "session/set_model",
+            Some(serde_json::to_value(params)?),
+        );
+        self.send(request).await
+    }
+
+    /// Set the mode for a session
+    pub async fn set_mode(&mut self, session_id: &str, mode_id: &str) -> Result<()> {
+        let params = SetModeParams {
+            session_id: session_id.to_string(),
+            mode_id: mode_id.to_string(),
+        };
+
+        let request = JsonRpcRequest::new(
+            self.next_id(),
+            "session/set_mode",
             Some(serde_json::to_value(params)?),
         );
         self.send(request).await
