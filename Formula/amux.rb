@@ -34,6 +34,6 @@ class Amux < Formula
   end
 
   test do
-    assert_match "amux", shell_output("#{bin}/amux --version 2>&1", 1)
+    assert_match version.to_s, shell_output("#{bin}/amux --version")
   end
 end
