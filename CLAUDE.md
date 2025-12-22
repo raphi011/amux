@@ -151,6 +151,18 @@ These features require ACP spec/agent support that doesn't exist yet:
 - **Clarifying questions** - Agent asks follow-up questions during planning or complex tasks. UI support exists (`session/ask_user`) but this is a Claude Code extension not yet implemented by agents.
 - **Extended thinking** - Display agent reasoning/thinking. The ACP spec only defines `agent_message_chunk` for streamed text; there is no `agent_thought_chunk` update type. Code has support ready if ACP adds this.
 
+## Development
+
+Before building or committing, always run these checks:
+
+```bash
+cargo fmt          # Format code
+cargo clippy       # Lint for common mistakes
+cargo build        # Build the project
+```
+
+CI enforces these checks - the build will fail if formatting or clippy warnings exist.
+
 ## Building
 
 ```bash
