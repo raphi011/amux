@@ -426,7 +426,7 @@ pub fn handle_worktree_cleanup_repo_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_help_mode(key: KeyEvent) -> Action {
+pub fn handle_help_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => Action::CloseHelp,
         _ => Action::None,

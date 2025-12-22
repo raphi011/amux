@@ -2147,37 +2147,37 @@ async fn process_action(
         }
         AgentPickerInputChar(c) => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_char(c);
+                picker.query_input_char(c);
             }
         }
         AgentPickerInputBackspace => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_backspace();
+                picker.query_backspace();
             }
         }
         AgentPickerInputDelete => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_delete();
+                picker.query_delete();
             }
         }
         AgentPickerInputLeft => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_left();
+                picker.query_left();
             }
         }
         AgentPickerInputRight => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_right();
+                picker.query_right();
             }
         }
         AgentPickerInputHome => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_home();
+                picker.query_home();
             }
         }
         AgentPickerInputEnd => {
             if let Some(picker) = &mut app.agent_picker {
-                picker.input_end();
+                picker.query_end();
             }
         }
 
@@ -2208,37 +2208,49 @@ async fn process_action(
         }
         BranchInputAcceptAutocomplete => {
             if let Some(branch_input) = &mut app.branch_input {
-                branch_input.accept_autocomplete();
+                branch_input.accept_selection();
             }
         }
         BranchInputDown => {
             if let Some(branch_input) = &mut app.branch_input {
-                branch_input.autocomplete_down();
+                branch_input.select_next();
             }
         }
         BranchInputUp => {
             if let Some(branch_input) = &mut app.branch_input {
-                branch_input.autocomplete_up();
+                branch_input.select_prev();
             }
         }
         BranchInputChar(c) => {
             if let Some(branch_input) = &mut app.branch_input {
-                branch_input.input_char(c);
+                branch_input.input.insert(branch_input.cursor_position, c);
+                branch_input.cursor_position += 1;
+                branch_input.update_filter();
+                branch_input.show_autocomplete = true;
             }
         }
         BranchInputBackspace => {
-            if let Some(branch_input) = &mut app.branch_input {
-                branch_input.input_backspace();
+            if let Some(branch_input) = &mut app.branch_input
+                && branch_input.cursor_position > 0
+            {
+                branch_input.cursor_position -= 1;
+                branch_input.input.remove(branch_input.cursor_position);
+                branch_input.update_filter();
+                branch_input.show_autocomplete = true;
             }
         }
         BranchInputLeft => {
-            if let Some(branch_input) = &mut app.branch_input {
-                branch_input.input_left();
+            if let Some(branch_input) = &mut app.branch_input
+                && branch_input.cursor_position > 0
+            {
+                branch_input.cursor_position -= 1;
             }
         }
         BranchInputRight => {
-            if let Some(branch_input) = &mut app.branch_input {
-                branch_input.input_right();
+            if let Some(branch_input) = &mut app.branch_input
+                && branch_input.cursor_position < branch_input.input.len()
+            {
+                branch_input.cursor_position += 1;
             }
         }
 
@@ -2263,7 +2275,7 @@ async fn process_action(
         }
         WorktreeCleanupSelectAll => {
             if let Some(cleanup) = &mut app.worktree_cleanup {
-                cleanup.select_all();
+                cleanup.select_all_cleanable();
             }
         }
         WorktreeCleanupDeselectAll => {
@@ -2352,7 +2364,7 @@ async fn process_action(
         }
         BugReportInputEnd => {
             if let Some(bug_report) = &mut app.bug_report {
-                bug_report.input_end();
+                bug_report.cursor_position = bug_report.description.len();
             }
         }
 
@@ -2597,14 +2609,25 @@ async fn handle_async_in_loop(
         AsyncAction::SubmitBranchInput => {
             if let Some(branch_input) = &app.branch_input {
                 let repo_path = branch_input.repo_path.clone();
-                let branch = branch_input.get_input();
+                let branch = branch_input.branch_name().to_string();
+                
+                // Construct worktree path
+                let repo_name = git::repo_name(&repo_path);
+                let worktree_path = app.worktree_config.worktree_path(&repo_name, &branch);
+                
                 app.close_branch_input();
 
-                // Create worktree
-                match git::create_worktree(&repo_path, &branch, &app.worktree_config.worktree_dir)
+                // Check if branch exists locally or as remote
+                let local_exists = git::branch_exists(&repo_path, &branch).await.unwrap_or(false);
+                let remote_exists = git::remote_branch_exists(&repo_path, &branch)
                     .await
+                    .unwrap_or(false);
+                let create_branch = !local_exists && !remote_exists;
+
+                // Create worktree
+                match git::create_worktree(&repo_path, &worktree_path, &branch, create_branch).await
                 {
-                    Ok(worktree_path) => {
+                    Ok(()) => {
                         let agents = check_all_agents();
                         app.open_agent_picker(worktree_path, true, agents);
                     }
@@ -2726,7 +2749,7 @@ async fn handle_async_in_loop(
         }
         AsyncAction::SubmitBugReport => {
             if let Some(bug_report) = &app.bug_report {
-                let description = bug_report.get_input();
+                let description = bug_report.description.clone();
                 app.close_bug_report();
 
                 // TODO: Implement bug report submission
