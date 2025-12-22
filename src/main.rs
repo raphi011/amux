@@ -5,6 +5,7 @@ mod config;
 mod events;
 mod git;
 mod log;
+mod notification;
 mod picker;
 mod scroll;
 mod session;
@@ -354,6 +355,7 @@ enum AgentCommand {
         session_id: String,
         model_id: String,
     },
+    CancelPrompt,
 }
 
 /// Info for resuming a session
@@ -517,7 +519,13 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new(start_dir, worktree_config, config.mcp_servers);
+    let notification_config = config.notifications.into();
+    let mut app = App::new(
+        start_dir,
+        worktree_config,
+        config.mcp_servers,
+        notification_config,
+    );
     app.log_path = log_path;
     app.session_id = session_id;
 
@@ -695,6 +703,17 @@ where
                                         app.input_buffer = buffer;
                                         app.cursor_position = cursor;
                                     }
+                                }
+                                continue;
+                            }
+                            Action::CancelPrompt => {
+                                // Cancel the running prompt
+                                if let Some(session) = app.sessions.selected_session_mut() {
+                                    let session_id = session.id.clone();
+                                    if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                                        let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
+                                    }
+                                    session.state = SessionState::Idle;
                                 }
                                 continue;
                             }
@@ -1898,13 +1917,12 @@ where
                 }
 
                 // Drain any additional pending terminal events before re-rendering
-                while let Some(Some(Ok(event))) = event_stream.next().now_or_never() {
-                    // Handle paste events
-                    if let Event::Paste(text) = &event {
-                        if app.input_mode == InputMode::Normal && app.sessions.selected_session().is_some() {
-                            app.enter_insert_mode();
-                        }
-                        if app.input_mode == InputMode::Insert {
+                // Only drain in Insert mode to batch fast typing - other modes process
+                // one event per loop iteration to avoid losing events
+                if app.input_mode == InputMode::Insert {
+                    while let Some(Some(Ok(event))) = event_stream.next().now_or_never() {
+                        // Handle paste events
+                        if let Event::Paste(text) = &event {
                             if let Some(path) = clipboard::try_parse_image_path(text) {
                                 if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
                                     app.add_attachment(ImageAttachment { filename, mime_type, data });
@@ -1914,20 +1932,18 @@ where
                             } else {
                                 for c in text.chars() { app.input_char(c); }
                             }
+                            continue;
                         }
-                        continue;
-                    }
 
-                    // Handle key events in drain loop
-                    if let Event::Key(key) = event
-                    && key.kind == KeyEventKind::Press {
-                        // Only handle simple insert-mode typing in the drain loop
-                        // Complex actions (mode switches, commands) are handled in the main loop
-                        if app.input_mode == InputMode::Insert {
+                        // Handle key events in drain loop
+                        if let Event::Key(key) = event
+                        && key.kind == KeyEventKind::Press {
                             match key.code {
                                 KeyCode::Char(c) => {
                                     if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
                                         app.input_char(c);
+                                    } else {
+                                        break; // Modified key (Ctrl+, etc), handle in main loop
                                     }
                                 }
                                 KeyCode::Backspace => { app.input_backspace(); }
@@ -1935,9 +1951,6 @@ where
                                 KeyCode::Right => { app.input_right(); }
                                 _ => break, // Complex key, exit drain loop and let main loop handle
                             }
-                        } else {
-                            // Non-insert mode, exit drain loop to handle properly
-                            break;
                         }
                     }
                 }
@@ -1946,14 +1959,31 @@ where
             // Agent events
             Some((session_id, event)) = agent_rx.recv() => {
                 let result = handle_agent_event(app, &session_id, event);
-                // Handle auto-accept permission responses
-                if let EventResult::AutoAcceptPermission { request_id, option_id } = result
-                    && let Some(cmd_tx) = agent_commands.get(&session_id) {
-                        let _ = cmd_tx.send(AgentCommand::PermissionResponse {
-                            request_id,
-                            option_id: Some(option_id),
-                        }).await;
+
+                // Process the result
+                match result {
+                    EventResult::None => {}
+                    EventResult::AutoAcceptPermission { request_id, option_id } => {
+                        if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                            let _ = cmd_tx.send(AgentCommand::PermissionResponse {
+                                request_id,
+                                option_id: Some(option_id),
+                            }).await;
+                        }
                     }
+                    EventResult::Notification(notification) => {
+                        process_notification(&mut app.notifications, notification);
+                    }
+                    EventResult::AutoAcceptWithNotification { request_id, option_id, notification } => {
+                        if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                            let _ = cmd_tx.send(AgentCommand::PermissionResponse {
+                                request_id,
+                                option_id: Some(option_id),
+                            }).await;
+                        }
+                        process_notification(&mut app.notifications, notification);
+                    }
+                }
             }
 
             // Internal app events (worktree deletion, etc.)
@@ -2158,6 +2188,15 @@ async fn spawn_agent_in_dir(
                                     .await;
                             }
                         }
+                        AgentCommand::CancelPrompt => {
+                            if let Err(e) = conn.cancel_prompt().await {
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Cancel prompt failed: {}", e),
+                                    })
+                                    .await;
+                            }
+                        }
                     }
                 }
             }
@@ -2309,6 +2348,15 @@ async fn spawn_agent_with_resume(
                                     .await;
                             }
                         }
+                        AgentCommand::CancelPrompt => {
+                            if let Err(e) = conn.cancel_prompt().await {
+                                let _ = event_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!("Cancel prompt failed: {}", e),
+                                    })
+                                    .await;
+                            }
+                        }
                     }
                 }
             }
@@ -2350,6 +2398,7 @@ async fn send_prompt(
             session.add_output(format!("> {}", text), OutputType::UserInput);
         }
         session.state = SessionState::Prompting;
+        session.idle_notified = false; // Reset so we notify when this prompt completes
 
         // Use local ID for HashMap lookup, ACP session ID for protocol
         let local_id = session.id.clone();
@@ -2397,12 +2446,54 @@ async fn send_prompt(
     }
 }
 
+/// Notification to send after handling an event
+enum NotificationEvent {
+    PermissionRequired {
+        session_name: String,
+        tool_name: String,
+    },
+    QuestionAsked {
+        session_name: String,
+    },
+    SessionIdle {
+        session_name: String,
+    },
+}
+
+/// Process a notification event by sending it through the notification manager
+fn process_notification(
+    notifications: &mut notification::NotificationManager,
+    event: NotificationEvent,
+) {
+    match event {
+        NotificationEvent::PermissionRequired {
+            session_name,
+            tool_name,
+        } => {
+            notifications.notify_permission_required(&session_name, &tool_name);
+        }
+        NotificationEvent::QuestionAsked { session_name } => {
+            notifications.notify_question(&session_name);
+        }
+        NotificationEvent::SessionIdle { session_name } => {
+            notifications.notify_idle(&session_name);
+        }
+    }
+}
+
 /// Result of handling an agent event - may contain a command to send back
 enum EventResult {
     None,
     AutoAcceptPermission {
         request_id: u64,
         option_id: PermissionOptionId,
+    },
+    Notification(NotificationEvent),
+    #[allow(dead_code)] // Reserved for future use
+    AutoAcceptWithNotification {
+        request_id: u64,
+        option_id: PermissionOptionId,
+        notification: NotificationEvent,
     },
 }
 
@@ -2456,6 +2547,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 match update {
                     SessionUpdate::AgentMessageChunk { content } => {
                         if let acp::protocol::UpdateContent::Text { text } = content {
+                            // Don't clear thought here - keep showing it until a new thought arrives
+                            // or the prompt completes
                             session.append_text(text);
                         }
                     }
@@ -2530,6 +2623,9 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 options,
                 ..
             } => {
+                let session_name = session.name.clone();
+                let tool_name = title.clone().unwrap_or_else(|| "Tool".to_string());
+
                 // Check if we should auto-accept (AcceptAll or Yolo mode)
                 if session.permission_mode.auto_accepts() {
                     // Find the first allow_once option
@@ -2563,6 +2659,12 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 if is_selected_session && is_insert_mode && !input_buffer.is_empty() {
                     session.save_input(input_buffer.clone(), cursor_position);
                 }
+
+                // Send notification
+                return EventResult::Notification(NotificationEvent::PermissionRequired {
+                    session_name,
+                    tool_name,
+                });
             }
             AgentEvent::AskUserRequest {
                 request_id,
@@ -2571,6 +2673,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 multi_select,
                 ..
             } => {
+                let session_name = session.name.clone();
+
                 // Show clarifying question dialog
                 session.state = SessionState::AwaitingUserInput;
                 session.pending_question = Some(PendingQuestion::new(
@@ -2584,13 +2688,30 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                 if is_selected_session && is_insert_mode && !input_buffer.is_empty() {
                     session.save_input(input_buffer.clone(), cursor_position);
                 }
+
+                // Send notification
+                return EventResult::Notification(NotificationEvent::QuestionAsked {
+                    session_name,
+                });
             }
             AgentEvent::PromptComplete { .. } => {
+                let session_name = session.name.clone();
+                let should_notify = !session.idle_notified;
+
                 session.state = SessionState::Idle;
                 session.pending_permission = None;
                 session.complete_active_tool();
+                session.clear_thought(); // Clear any remaining thought
                 // Add blank line after response for spacing
                 session.add_output(String::new(), OutputType::Text);
+
+                // Send idle notification if not already sent for this prompt
+                if should_notify {
+                    session.idle_notified = true;
+                    return EventResult::Notification(NotificationEvent::SessionIdle {
+                        session_name,
+                    });
+                }
             }
             AgentEvent::FileWritten { diff, .. } => {
                 // Show the diff (file path is already shown in the tool call)
