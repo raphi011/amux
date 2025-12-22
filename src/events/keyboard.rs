@@ -318,7 +318,7 @@ pub fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
     }
 }
 
-fn handle_folder_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_folder_picker_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
         KeyCode::Char('j') | KeyCode::Down => Action::FolderPickerDown,
@@ -330,7 +330,7 @@ fn handle_folder_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_worktree_folder_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_worktree_folder_picker_mode(key: KeyEvent) -> Action {
     // Same as folder picker but with different selection behavior
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
@@ -343,7 +343,7 @@ fn handle_worktree_folder_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_worktree_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_worktree_picker_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseWorktreePicker,
         KeyCode::Char('j') | KeyCode::Down => Action::WorktreePickerDown,
@@ -354,7 +354,7 @@ fn handle_worktree_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_branch_input_mode(key: KeyEvent) -> Action {
+pub fn handle_branch_input_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => Action::CloseBranchInput,
         KeyCode::Enter => Action::SubmitBranchInput,
@@ -369,7 +369,7 @@ fn handle_branch_input_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_agent_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_agent_picker_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseAgentPicker,
         KeyCode::Char('j') | KeyCode::Down => Action::AgentPickerDown,
@@ -389,7 +389,7 @@ fn handle_agent_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_session_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_session_picker_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseSessionPicker,
         KeyCode::Char('j') | KeyCode::Down => Action::SessionPickerDown,
@@ -399,7 +399,7 @@ fn handle_session_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_worktree_cleanup_mode(key: KeyEvent) -> Action {
+pub fn handle_worktree_cleanup_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseWorktreeCleanup,
         KeyCode::Char('j') | KeyCode::Down => Action::WorktreeCleanupDown,
@@ -413,7 +413,7 @@ fn handle_worktree_cleanup_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_worktree_cleanup_repo_picker_mode(key: KeyEvent) -> Action {
+pub fn handle_worktree_cleanup_repo_picker_mode(key: KeyEvent) -> Action {
     // Same as folder picker
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
@@ -433,7 +433,7 @@ fn handle_help_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_clear_confirm_mode(key: KeyEvent) -> Action {
+pub fn handle_clear_confirm_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Enter => Action::ClearSession,
         KeyCode::Char('n') | KeyCode::Esc => Action::CloseClearConfirm,
@@ -441,7 +441,7 @@ fn handle_clear_confirm_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_bug_report_mode(key: KeyEvent) -> Action {
+pub fn handle_bug_report_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => Action::CloseBugReport,
         KeyCode::Enter => Action::SubmitBugReport,

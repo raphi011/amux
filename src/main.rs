@@ -12,6 +12,7 @@ mod session;
 mod tui;
 
 use anyhow::Result;
+use std::path::PathBuf;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -35,7 +36,13 @@ use app::{
 };
 use clipboard::ClipboardContent;
 use events::Action;
-use events::keyboard::handle_insert_mode;
+use events::keyboard::{
+    handle_insert_mode, handle_folder_picker_mode, handle_worktree_folder_picker_mode,
+    handle_worktree_cleanup_repo_picker_mode, handle_worktree_picker_mode,
+    handle_agent_picker_mode, handle_session_picker_mode, handle_branch_input_mode,
+    handle_worktree_cleanup_mode, handle_clear_confirm_mode, handle_bug_report_mode,
+    handle_help_mode,
+};
 use picker::Picker;
 use session::{
     AgentType, OutputType, PendingPermission, PendingQuestion, SessionState, check_all_agents,
@@ -1055,642 +1062,64 @@ where
                                     }
                                 }
                             }
-                            InputMode::FolderPicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_folder_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char('l') | KeyCode::Right => {
-                                        // Enter directory
-                                        if app.folder_picker_enter_dir()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                                        // Go up
-                                        if app.folder_picker_go_up()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Select folder and open agent picker
-                                        if let Some(picker) = &app.folder_picker
-                                            && let Some(entry) = picker.selected_entry() {
-                                                if entry.is_parent {
-                                                    // Go up
-                                                    if app.folder_picker_go_up()
-                                                        && let Some(picker) = &app.folder_picker {
-                                                            let entries = scan_folder_entries(&picker.current_dir).await;
-                                                            app.set_folder_entries(entries);
-                                                        }
-                                                } else {
-                                                    let path = entry.path.clone();
-                                                    app.close_folder_picker();
-                                                    let agents = check_all_agents();
-                                                    app.open_agent_picker(path, false, agents);
-                                                }
-                                            }
-                                    }
-                                    _ => {}
+                            InputMode::FolderPicker | InputMode::WorktreeFolderPicker | InputMode::WorktreeCleanupRepoPicker => {
+                                let action = match app.input_mode {
+                                    InputMode::FolderPicker => handle_folder_picker_mode(key),
+                                    InputMode::WorktreeFolderPicker => handle_worktree_folder_picker_mode(key),
+                                    InputMode::WorktreeCleanupRepoPicker => handle_worktree_cleanup_repo_picker_mode(key),
+                                    _ => Action::None,
+                                };
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    // Handle async actions in a separate block since we have many actions now
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::WorktreePicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_worktree_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.worktree_picker {
-                                            picker.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.worktree_picker {
-                                            picker.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char('c') => {
-                                        // Open cleanup for worktrees in the picker
-                                        // Re-scan with fetch to get accurate merge status
-                                        let worktree_dir = app.worktree_config.worktree_dir.clone();
-                                        log::log(&format!("Worktree cleanup: scanning dir {:?}", worktree_dir));
-                                        app.close_worktree_picker();
-
-                                        let worktree_entries = scan_worktrees(&worktree_dir, true).await;
-                                        log::log(&format!("Worktree cleanup: found {} entries", worktree_entries.len()));
-                                        let entries: Vec<CleanupEntry> = worktree_entries.iter()
-                                            .filter(|e| !e.is_create_new)
-                                            .map(|e| {
-                                                // Extract branch name from worktree name (format: repo-branch)
-                                                let branch = e.name.split_once('-')
-                                                    .map(|(_, b)| b.to_string());
-                                                CleanupEntry {
-                                                    path: e.path.clone(),
-                                                    branch,
-                                                    is_clean: e.is_clean,
-                                                    is_merged: e.is_merged,
-                                                    selected: false,
-                                                    is_deleting: false,
-                                                }
-                                            })
-                                            .collect();
-
-                                        log::log(&format!("Worktree cleanup: {} cleanup entries after filter", entries.len()));
-                                        if !entries.is_empty() {
-                                            app.open_worktree_cleanup(worktree_dir, entries);
-                                        } else {
-                                            log::log("Worktree cleanup: no entries to clean up, not opening dialog");
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        if let Some(picker) = &app.worktree_picker
-                                            && let Some(entry) = picker.selected_entry() {
-                                                if entry.is_create_new {
-                                                    // Create new worktree - go to folder picker
-                                                    app.close_worktree_picker();
-                                                    let start = app.start_dir.clone();
-                                                    app.open_worktree_folder_picker(start.clone());
-                                                    let entries = scan_folder_entries(&start).await;
-                                                    app.set_folder_entries(entries);
-                                                } else {
-                                                    // Open existing worktree
-                                                    let path = entry.path.clone();
-                                                    app.close_worktree_picker();
-                                                    let agents = check_all_agents();
-                                                    app.open_agent_picker(path, true, agents);
-                                                }
-                                            }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            InputMode::WorktreeFolderPicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_folder_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char('l') | KeyCode::Right => {
-                                        // Enter directory
-                                        if app.folder_picker_enter_dir()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                                        // Go up
-                                        if app.folder_picker_go_up()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Select git repo and proceed to branch input
-                                        if let Some(picker) = &app.folder_picker
-                                            && let Some(entry) = picker.selected_entry() {
-                                                if entry.is_parent {
-                                                    // Go up
-                                                    if app.folder_picker_go_up()
-                                                        && let Some(picker) = &app.folder_picker {
-                                                            let entries = scan_folder_entries(&picker.current_dir).await;
-                                                            app.set_folder_entries(entries);
-                                                        }
-                                                } else if entry.git_branch.is_some() {
-                                                    // This is a git repo - proceed to branch input
-                                                    let repo_path = entry.path.clone();
-                                                    app.close_folder_picker();
-
-                                                    // Fetch branches and open branch input
-                                                    match git::list_branches(&repo_path).await {
-                                                        Ok(branches) => {
-                                                            app.open_branch_input(repo_path, branches);
-                                                        }
-                                                        Err(e) => {
-                                                            log::log(&format!("Failed to list branches: {}", e));
-                                                        }
-                                                    }
-                                                }
-                                                // Non-git directories are ignored - only git repos can be selected
-                                            }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            InputMode::BranchInput => {
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        app.close_branch_input();
-                                    }
-                                    KeyCode::Enter => {
-                                        // Create worktree and open agent picker
-                                        if let Some(branch_state) = &app.branch_input {
-                                            let branch_name = branch_state.branch_name().to_string();
-                                            if !branch_name.is_empty() {
-                                                let repo_path = branch_state.repo_path.clone();
-                                                let repo_name = git::repo_name(&repo_path);
-                                                let worktree_path = app.worktree_config.worktree_path(&repo_name, &branch_name);
-
-                                                // Check if branch exists locally or as remote
-                                                let local_exists = git::branch_exists(&repo_path, &branch_name).await.unwrap_or(false);
-                                                let remote_exists = git::remote_branch_exists(&repo_path, &branch_name).await.unwrap_or(false);
-                                                let create_branch = !local_exists && !remote_exists;
-
-                                                // Create worktree
-                                                match git::create_worktree(&repo_path, &worktree_path, &branch_name, create_branch).await {
-                                                    Ok(()) => {
-                                                        app.close_branch_input();
-                                                        // Open agent picker for the new worktree
-                                                        let agents = check_all_agents();
-                                                        app.open_agent_picker(worktree_path, true, agents);
-                                                    }
-                                                    Err(e) => {
-                                                        log::log(&format!("Failed to create worktree: {}", e));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    KeyCode::Tab => {
-                                        // Accept autocomplete selection
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            branch_state.accept_selection();
-                                        }
-                                    }
-                                    KeyCode::Down => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            branch_state.select_next();
-                                        }
-                                    }
-                                    KeyCode::Up => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            branch_state.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(branch_state) = &mut app.branch_input {
-                                            branch_state.input.insert(branch_state.cursor_position, c);
-                                            branch_state.cursor_position += 1;
-                                            branch_state.update_filter();
-                                            branch_state.show_autocomplete = true;
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(branch_state) = &mut app.branch_input
-                                            && branch_state.cursor_position > 0 {
-                                                branch_state.cursor_position -= 1;
-                                                branch_state.input.remove(branch_state.cursor_position);
-                                                branch_state.update_filter();
-                                                branch_state.show_autocomplete = true;
-                                            }
-                                    }
-                                    KeyCode::Left => {
-                                        if let Some(branch_state) = &mut app.branch_input
-                                            && branch_state.cursor_position > 0 {
-                                                branch_state.cursor_position -= 1;
-                                            }
-                                    }
-                                    KeyCode::Right => {
-                                        if let Some(branch_state) = &mut app.branch_input
-                                            && branch_state.cursor_position < branch_state.input.len() {
-                                                branch_state.cursor_position += 1;
-                                            }
-                                    }
-                                    _ => {}
+                                let action = handle_worktree_picker_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::AgentPicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_agent_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.select_next_available();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.select_prev_available();
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Spawn session with selected agent (only if available)
-                                        if let Some(picker) = &app.agent_picker
-                                            && picker.selected_is_available()
-                                            && let Some(agent_type) = picker.selected_agent()
-                                        {
-                                            let cwd = picker.cwd.clone();
-                                            let is_worktree = picker.is_worktree;
-                                            app.close_agent_picker();
-                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
-                                        }
-                                        // If not available, do nothing (user can see the ✗ markers)
-                                    }
-                                    // Filter input
-                                    KeyCode::Char(c) => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_input_char(c);
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_backspace();
-                                        }
-                                    }
-                                    KeyCode::Delete => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_delete();
-                                        }
-                                    }
-                                    KeyCode::Left => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_left();
-                                        }
-                                    }
-                                    KeyCode::Right => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_right();
-                                        }
-                                    }
-                                    KeyCode::Home => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_home();
-                                        }
-                                    }
-                                    KeyCode::End => {
-                                        if let Some(picker) = &mut app.agent_picker {
-                                            picker.query_end();
-                                        }
-                                    }
-                                    _ => {}
+                                let action = handle_agent_picker_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::SessionPicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_session_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.session_picker {
-                                            picker.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.session_picker {
-                                            picker.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Resume selected session (defaults to ClaudeCode for now)
-                                        if let Some(picker) = &app.session_picker
-                                            && let Some(session) = picker.selected_session() {
-                                                let resume_info = ResumeInfo {
-                                                    session_id: session.session_id.clone(),
-                                                    cwd: session.cwd.clone(),
-                                                };
-                                                app.close_session_picker();
-                                                spawn_agent_with_resume(app, &agent_tx, &mut agent_commands, AgentType::ClaudeCode, resume_info).await?;
-                                            }
-                                    }
-                                    _ => {}
+                                let action = handle_session_picker_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
-                            InputMode::Help => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                                        app.close_help();
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            InputMode::BugReport => {
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        app.close_bug_report();
-                                    }
-                                    KeyCode::Enter => {
-                                        // Submit bug report
-                                        if let Some((description, log_path)) = app.take_bug_report()
-                                            && !description.trim().is_empty()
-                                        {
-                                            let session_id = app.session_id.clone().unwrap_or_default();
-                                            tokio::spawn(async move {
-                                                if let Err(e) = submit_bug_report(&description, &log_path, &session_id).await {
-                                                    log::log(&format!("Failed to submit bug report: {}", e));
-                                                }
-                                            });
-                                        }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_char(c);
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_backspace();
-                                        }
-                                    }
-                                    KeyCode::Delete => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_delete();
-                                        }
-                                    }
-                                    KeyCode::Left => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_left();
-                                        }
-                                    }
-                                    KeyCode::Right => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_right();
-                                        }
-                                    }
-                                    KeyCode::Home => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_home();
-                                        }
-                                    }
-                                    KeyCode::End => {
-                                        if let Some(bug_report) = &mut app.bug_report {
-                                            bug_report.input_end();
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            InputMode::WorktreeCleanupRepoPicker => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_folder_picker();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(picker) = &mut app.folder_picker {
-                                            picker.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char('l') | KeyCode::Right => {
-                                        // Enter directory
-                                        if app.folder_picker_enter_dir()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                                        // Go up
-                                        if app.folder_picker_go_up()
-                                            && let Some(picker) = &app.folder_picker {
-                                                let entries = scan_folder_entries(&picker.current_dir).await;
-                                                app.set_folder_entries(entries);
-                                            }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Select git repo and scan for cleanable worktrees
-                                        if let Some(picker) = &app.folder_picker
-                                            && let Some(entry) = picker.selected_entry() {
-                                                if entry.is_parent {
-                                                    // Go up
-                                                    if app.folder_picker_go_up()
-                                                        && let Some(picker) = &app.folder_picker {
-                                                            let entries = scan_folder_entries(&picker.current_dir).await;
-                                                            app.set_folder_entries(entries);
-                                                        }
-                                                } else if entry.git_branch.is_some() {
-                                                    // This is a git repo - scan for worktrees
-                                                    let repo_path = entry.path.clone();
-                                                    app.close_folder_picker();
-
-                                                    // Fetch first for accurate merge status
-                                                    log::log(&format!("Fetching from origin in {}", repo_path.display()));
-                                                    if let Err(e) = git::fetch_origin(&repo_path).await {
-                                                        log::log(&format!("Failed to fetch: {}", e));
-                                                    }
-
-                                                    match git::list_worktrees(&repo_path).await {
-                                                        Ok(worktrees) => {
-                                                            if worktrees.is_empty() {
-                                                                log::log("No worktrees found for this repository");
-                                                            } else {
-                                                                let entries: Vec<CleanupEntry> = worktrees.into_iter().map(|w| {
-                                                                    CleanupEntry {
-                                                                        path: w.path,
-                                                                        branch: w.branch,
-                                                                        is_clean: w.is_clean,
-                                                                        is_merged: w.is_merged,
-                                                                        selected: false,
-                                                                        is_deleting: false,
-                                                                    }
-                                                                }).collect();
-                                                                app.open_worktree_cleanup(repo_path, entries);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            log::log(&format!("Failed to list worktrees: {}", e));
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                    }
-                                    _ => {}
+                            InputMode::BranchInput => {
+                                let action = handle_branch_input_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::WorktreeCleanup => {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') => {
-                                        app.close_worktree_cleanup();
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.select_next();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.select_prev();
-                                        }
-                                    }
-                                    KeyCode::Char(' ') => {
-                                        // Toggle selection of current entry
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.toggle_selected();
-                                        }
-                                    }
-                                    KeyCode::Char('a') => {
-                                        // Select all cleanable
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.select_all_cleanable();
-                                        }
-                                    }
-                                    KeyCode::Char('n') => {
-                                        // Deselect all
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.deselect_all();
-                                        }
-                                    }
-                                    KeyCode::Char('b') => {
-                                        // Toggle delete branches option
-                                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                                            cleanup.toggle_delete_branches();
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        // Perform cleanup of selected worktrees asynchronously
-                                        if let Some(cleanup) = &mut app.worktree_cleanup
-                                            && cleanup.has_selection() {
-                                                let delete_branches = cleanup.delete_branches;
-                                                let selected: Vec<_> = cleanup.selected_entries()
-                                                    .iter()
-                                                    .map(|e| (e.path.clone(), e.branch.clone()))
-                                                    .collect();
-
-                                                // Mark selected entries as deleting
-                                                for entry in &mut cleanup.entries {
-                                                    if entry.selected {
-                                                        entry.is_deleting = true;
-                                                    }
-                                                }
-
-                                                // Spawn async deletion tasks for each selected worktree
-                                                for (worktree_path, branch) in selected {
-                                                    let tx = app_event_tx.clone();
-                                                    tokio::spawn(async move {
-                                                        // Get the actual git repo for this worktree
-                                                        let Some(parent_repo) = get_worktree_parent_repo(&worktree_path).await else {
-                                                            let _ = tx.send(AppEvent::WorktreeDeletionFailed(
-                                                                worktree_path.clone(),
-                                                                "Failed to find parent repo".to_string(),
-                                                            )).await;
-                                                            return;
-                                                        };
-
-                                                        // Remove worktree
-                                                        if let Err(e) = git::remove_worktree(&parent_repo, &worktree_path, false).await {
-                                                            let _ = tx.send(AppEvent::WorktreeDeletionFailed(
-                                                                worktree_path.clone(),
-                                                                e.to_string(),
-                                                            )).await;
-                                                            return;
-                                                        }
-                                                        log::log(&format!("Removed worktree: {}", worktree_path.display()));
-
-                                                        // Delete branch if requested
-                                                        if delete_branches
-                                                            && let Some(branch_name) = branch
-                                                        {
-                                                            if let Err(e) = git::delete_branch(&parent_repo, &branch_name, false).await {
-                                                                log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
-                                                            } else {
-                                                                log::log(&format!("Deleted branch: {}", branch_name));
-                                                            }
-                                                        }
-
-                                                        // Signal success
-                                                        let _ = tx.send(AppEvent::WorktreeDeleted(worktree_path)).await;
-                                                    });
-                                                }
-                                            }
-                                    }
-                                    _ => {}
+                                let action = handle_worktree_cleanup_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::ClearConfirm => {
-                                match key.code {
-                                    KeyCode::Char('y') | KeyCode::Enter => {
-                                        // Clear and respawn session
-                                        if let Some(session) = app.sessions.selected_session() {
-                                            let agent_type = session.agent_type;
-                                            let cwd = session.cwd.clone();
-                                            let is_worktree = session.is_worktree;
-                                            let old_session_id = session.id.clone();
-
-                                            // Remove the old session's command channel
-                                            agent_commands.remove(&old_session_id);
-
-                                            // Kill the old session
-                                            app.kill_selected_session();
-
-                                            // Close the confirmation dialog
-                                            app.close_clear_confirm();
-
-                                            // Spawn a new session with the same settings
-                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
-                                        }
-                                    }
-                                    KeyCode::Char('n') | KeyCode::Esc => {
-                                        app.close_clear_confirm();
-                                    }
-                                    _ => {}
+                                let action = handle_clear_confirm_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
+                                }
+                            }
+                            InputMode::BugReport => {
+                                let action = handle_bug_report_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
+                                }
+                            }
+                            InputMode::Help => {
+                                let action = handle_help_mode(key);
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                             InputMode::Insert => {
@@ -1699,101 +1128,7 @@ where
 
                                 // Process the action
                                 if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
-                                    match async_action {
-                                        AsyncAction::SubmitPrompt => {
-                                            let is_bash = app.is_bash_mode();
-                                            let text = app.take_input();
-                                            if is_bash && !text.is_empty() {
-                                                // Execute bash command
-                                                if let Some(session) = app.sessions.selected_session() {
-                                                    let session_id = session.id.clone();
-                                                    let cwd = session.cwd.clone();
-                                                    let command = text.clone();
-
-                                                    // Add command to output
-                                                    let session_idx = app.sessions.selected_index();
-                                                    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                                        session.add_output(format!("$ {}", command), OutputType::BashCommand);
-                                                    }
-
-                                                    // Start tracking the command
-                                                    app.start_bash_command(command.clone());
-
-                                                    // Execute asynchronously
-                                                    let tx = app_event_tx.clone();
-                                                    tokio::spawn(async move {
-                                                        let output = tokio::process::Command::new("sh")
-                                                            .arg("-c")
-                                                            .arg(&command)
-                                                            .current_dir(&cwd)
-                                                            .output()
-                                                            .await;
-
-                                                        let (output_text, success) = match output {
-                                                            Ok(out) => {
-                                                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                                                let combined = if stderr.is_empty() {
-                                                                    stdout.to_string()
-                                                                } else if stdout.is_empty() {
-                                                                    stderr.to_string()
-                                                                } else {
-                                                                    format!("{}\n{}", stdout, stderr)
-                                                                };
-                                                                (combined, out.status.success())
-                                                            }
-                                                            Err(e) => (format!("Error: {}", e), false),
-                                                        };
-
-                                                        let _ = tx.send(AppEvent::BashCommandCompleted {
-                                                            session_id,
-                                                            command,
-                                                            output: output_text,
-                                                            success,
-                                                        }).await;
-                                                    });
-                                                }
-                                            } else if !text.is_empty() || app.has_attachments() {
-                                                send_prompt(app, &agent_commands, &text).await;
-                                            }
-                                            app.exit_insert_mode();
-                                        }
-                                        AsyncAction::PasteClipboard => {
-                                            // Ctrl+V: paste from clipboard
-                                            match clipboard::read_clipboard() {
-                                                Ok(ClipboardContent::Image { data, mime_type }) => {
-                                                    app.add_attachment(ImageAttachment {
-                                                        filename: "clipboard".to_string(),
-                                                        mime_type,
-                                                        data,
-                                                    });
-                                                }
-                                                Ok(ClipboardContent::Text(text)) => {
-                                                    // Check if it's a path to an image file
-                                                    if let Some(path) = clipboard::try_parse_image_path(&text) {
-                                                        if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
-                                                            app.add_attachment(ImageAttachment {
-                                                                filename,
-                                                                mime_type,
-                                                                data,
-                                                            });
-                                                        } else {
-                                                            // Not a valid image, paste as text
-                                                            for c in text.chars() {
-                                                                app.input_char(c);
-                                                            }
-                                                        }
-                                                    } else {
-                                                        // Regular text, paste it
-                                                        for c in text.chars() {
-                                                            app.input_char(c);
-                                                        }
-                                                    }
-                                                }
-                                                Ok(ClipboardContent::None) | Err(_) => {}
-                                            }
-                                        }
-                                    }
+                                    handle_async_in_loop(app, async_action, &agent_tx, &mut agent_commands, &app_event_tx).await?;
                                 }
                             }
                         }
@@ -2735,72 +2070,290 @@ async fn process_action(
             app.toggle_debug_tool_json();
         }
 
-        // === Folder/Agent/Session pickers - handled in old code ===
-        // These will need more complex refactoring later
-        OpenFolderPicker(_)
-        | CloseFolderPicker
-        | FolderPickerDown
-        | FolderPickerUp
-        | FolderPickerEnterDir
-        | FolderPickerGoUp
-        | FolderPickerSelect
-        | OpenWorktreePicker
-        | CloseWorktreePicker
-        | WorktreePickerDown
-        | WorktreePickerUp
-        | WorktreePickerSelect
-        | WorktreePickerCleanup
-        | OpenAgentPicker { .. }
-        | CloseAgentPicker
-        | AgentPickerDown
-        | AgentPickerUp
-        | AgentPickerSelect
-        | AgentPickerInputChar(_)
-        | AgentPickerInputBackspace
-        | AgentPickerInputDelete
-        | AgentPickerInputLeft
-        | AgentPickerInputRight
-        | AgentPickerInputHome
-        | AgentPickerInputEnd
-        | CloseSessionPicker
-        | SessionPickerDown
-        | SessionPickerUp
-        | SessionPickerSelect
-        | CloseBranchInput
-        | SubmitBranchInput
-        | BranchInputAcceptAutocomplete
-        | BranchInputDown
-        | BranchInputUp
-        | BranchInputChar(_)
-        | BranchInputBackspace
-        | BranchInputLeft
-        | BranchInputRight
-        | CloseWorktreeCleanup
-        | WorktreeCleanupDown
-        | WorktreeCleanupUp
-        | WorktreeCleanupToggle
-        | WorktreeCleanupSelectAll
-        | WorktreeCleanupDeselectAll
-        | WorktreeCleanupToggleBranches
-        | WorktreeCleanupExecute
-        | SpawnAgent { .. }
-        | DuplicateSession
-        | ClearSession
-        | OpenClearConfirm
-        | CloseClearConfirm
-        | KillSession
-        | OpenBugReport
-        | CloseBugReport
-        | SubmitBugReport
-        | BugReportInputChar(_)
-        | BugReportInputBackspace
-        | BugReportInputDelete
-        | BugReportInputLeft
-        | BugReportInputRight
-        | BugReportInputHome
-        | BugReportInputEnd => {
-            // These are still handled by the old code for now
-            // Will refactor in a follow-up
+        // === Folder picker ===
+        OpenFolderPicker(path) => {
+            return Some(AsyncAction::OpenFolderPicker(path));
+        }
+        CloseFolderPicker => {
+            app.close_folder_picker();
+        }
+        FolderPickerDown => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.select_next();
+            }
+        }
+        FolderPickerUp => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.select_prev();
+            }
+        }
+        FolderPickerEnterDir => {
+            if app.folder_picker_enter_dir() {
+                return Some(AsyncAction::RefreshFolderPicker);
+            }
+        }
+        FolderPickerGoUp => {
+            if app.folder_picker_go_up() {
+                return Some(AsyncAction::RefreshFolderPicker);
+            }
+        }
+        FolderPickerSelect => {
+            return Some(AsyncAction::FolderPickerSelect);
+        }
+
+        // === Worktree picker ===
+        OpenWorktreePicker => {
+            return Some(AsyncAction::OpenWorktreePicker);
+        }
+        CloseWorktreePicker => {
+            app.close_worktree_picker();
+        }
+        WorktreePickerDown => {
+            if let Some(picker) = &mut app.worktree_picker {
+                picker.select_next();
+            }
+        }
+        WorktreePickerUp => {
+            if let Some(picker) = &mut app.worktree_picker {
+                picker.select_prev();
+            }
+        }
+        WorktreePickerSelect => {
+            return Some(AsyncAction::WorktreePickerSelect);
+        }
+        WorktreePickerCleanup => {
+            return Some(AsyncAction::WorktreePickerCleanup);
+        }
+
+        // === Agent picker ===
+        OpenAgentPicker { cwd, is_worktree } => {
+            return Some(AsyncAction::OpenAgentPicker { cwd, is_worktree });
+        }
+        CloseAgentPicker => {
+            app.close_agent_picker();
+        }
+        AgentPickerDown => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.select_next();
+            }
+        }
+        AgentPickerUp => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.select_prev();
+            }
+        }
+        AgentPickerSelect => {
+            return Some(AsyncAction::AgentPickerSelect);
+        }
+        AgentPickerInputChar(c) => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_char(c);
+            }
+        }
+        AgentPickerInputBackspace => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_backspace();
+            }
+        }
+        AgentPickerInputDelete => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_delete();
+            }
+        }
+        AgentPickerInputLeft => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_left();
+            }
+        }
+        AgentPickerInputRight => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_right();
+            }
+        }
+        AgentPickerInputHome => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_home();
+            }
+        }
+        AgentPickerInputEnd => {
+            if let Some(picker) = &mut app.agent_picker {
+                picker.input_end();
+            }
+        }
+
+        // === Session picker ===
+        CloseSessionPicker => {
+            app.close_session_picker();
+        }
+        SessionPickerDown => {
+            if let Some(picker) = &mut app.session_picker {
+                picker.select_next();
+            }
+        }
+        SessionPickerUp => {
+            if let Some(picker) = &mut app.session_picker {
+                picker.select_prev();
+            }
+        }
+        SessionPickerSelect => {
+            return Some(AsyncAction::SessionPickerSelect);
+        }
+
+        // === Branch input ===
+        CloseBranchInput => {
+            app.close_branch_input();
+        }
+        SubmitBranchInput => {
+            return Some(AsyncAction::SubmitBranchInput);
+        }
+        BranchInputAcceptAutocomplete => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.accept_autocomplete();
+            }
+        }
+        BranchInputDown => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.autocomplete_down();
+            }
+        }
+        BranchInputUp => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.autocomplete_up();
+            }
+        }
+        BranchInputChar(c) => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.input_char(c);
+            }
+        }
+        BranchInputBackspace => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.input_backspace();
+            }
+        }
+        BranchInputLeft => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.input_left();
+            }
+        }
+        BranchInputRight => {
+            if let Some(branch_input) = &mut app.branch_input {
+                branch_input.input_right();
+            }
+        }
+
+        // === Worktree cleanup ===
+        CloseWorktreeCleanup => {
+            app.close_worktree_cleanup();
+        }
+        WorktreeCleanupDown => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.select_next();
+            }
+        }
+        WorktreeCleanupUp => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.select_prev();
+            }
+        }
+        WorktreeCleanupToggle => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.toggle_selected();
+            }
+        }
+        WorktreeCleanupSelectAll => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.select_all();
+            }
+        }
+        WorktreeCleanupDeselectAll => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.deselect_all();
+            }
+        }
+        WorktreeCleanupToggleBranches => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                cleanup.toggle_delete_branches();
+            }
+        }
+        WorktreeCleanupExecute => {
+            return Some(AsyncAction::WorktreeCleanupExecute);
+        }
+
+        // === Session management ===
+        SpawnAgent {
+            agent_type,
+            cwd,
+            is_worktree,
+        } => {
+            return Some(AsyncAction::SpawnAgent {
+                agent_type,
+                cwd,
+                is_worktree,
+            });
+        }
+        DuplicateSession => {
+            return Some(AsyncAction::DuplicateSession);
+        }
+        ClearSession => {
+            return Some(AsyncAction::ClearSession);
+        }
+        OpenClearConfirm => {
+            if app.sessions.selected_session().is_some() {
+                app.open_clear_confirm();
+            }
+        }
+        CloseClearConfirm => {
+            app.close_clear_confirm();
+        }
+        KillSession => {
+            return Some(AsyncAction::KillSession);
+        }
+
+        // === Bug report ===
+        OpenBugReport => {
+            app.open_bug_report();
+        }
+        CloseBugReport => {
+            app.close_bug_report();
+        }
+        SubmitBugReport => {
+            return Some(AsyncAction::SubmitBugReport);
+        }
+        BugReportInputChar(c) => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_char(c);
+            }
+        }
+        BugReportInputBackspace => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_backspace();
+            }
+        }
+        BugReportInputDelete => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_delete();
+            }
+        }
+        BugReportInputLeft => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_left();
+            }
+        }
+        BugReportInputRight => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_right();
+            }
+        }
+        BugReportInputHome => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_home();
+            }
+        }
+        BugReportInputEnd => {
+            if let Some(bug_report) = &mut app.bug_report {
+                bug_report.input_end();
+            }
         }
 
         Action::None => {}
@@ -2813,6 +2366,375 @@ async fn process_action(
 enum AsyncAction {
     SubmitPrompt,
     PasteClipboard,
+    OpenFolderPicker(PathBuf),
+    RefreshFolderPicker,
+    FolderPickerSelect,
+    OpenWorktreePicker,
+    WorktreePickerSelect,
+    WorktreePickerCleanup,
+    OpenAgentPicker {
+        cwd: PathBuf,
+        is_worktree: bool,
+    },
+    AgentPickerSelect,
+    SessionPickerSelect,
+    SubmitBranchInput,
+    WorktreeCleanupExecute,
+    SpawnAgent {
+        agent_type: AgentType,
+        cwd: PathBuf,
+        is_worktree: bool,
+    },
+    DuplicateSession,
+    ClearSession,
+    KillSession,
+    SubmitBugReport,
+}
+
+/// Handle async actions in the main event loop.
+/// This function contains all the async logic that was previously duplicated in Insert mode handling.
+#[allow(clippy::too_many_lines)]
+async fn handle_async_in_loop(
+    app: &mut App,
+    async_action: AsyncAction,
+    agent_tx: &mpsc::Sender<(String, AgentEvent)>,
+    agent_commands: &mut HashMap<String, mpsc::Sender<AgentCommand>>,
+    app_event_tx: &mpsc::Sender<AppEvent>,
+) -> Result<()> {
+    match async_action {
+        AsyncAction::SubmitPrompt => {
+            let is_bash = app.is_bash_mode();
+            let text = app.take_input();
+            if is_bash && !text.is_empty() {
+                // Execute bash command
+                if let Some(session) = app.sessions.selected_session() {
+                    let session_id = session.id.clone();
+                    let cwd = session.cwd.clone();
+                    let command = text.clone();
+
+                    // Add command to output
+                    let session_idx = app.sessions.selected_index();
+                    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                        session.add_output(format!("$ {}", command), OutputType::BashCommand);
+                    }
+
+                    // Start tracking the command
+                    app.start_bash_command(command.clone());
+
+                    // Execute asynchronously
+                    let tx = app_event_tx.clone();
+                    tokio::spawn(async move {
+                        let output = tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&command)
+                            .current_dir(&cwd)
+                            .output()
+                            .await;
+
+                        let (output_text, success) = match output {
+                            Ok(out) => {
+                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                let combined = if stderr.is_empty() {
+                                    stdout.to_string()
+                                } else if stdout.is_empty() {
+                                    stderr.to_string()
+                                } else {
+                                    format!("{}\n{}", stdout, stderr)
+                                };
+                                (combined, out.status.success())
+                            }
+                            Err(e) => (format!("Error: {}", e), false),
+                        };
+
+                        let _ = tx
+                            .send(AppEvent::BashCommandCompleted {
+                                session_id,
+                                command,
+                                output: output_text,
+                                success,
+                            })
+                            .await;
+                    });
+                }
+            } else if !text.is_empty() || app.has_attachments() {
+                send_prompt(app, agent_commands, &text).await;
+            }
+            app.exit_insert_mode();
+        }
+        AsyncAction::PasteClipboard => {
+            // Ctrl+V: paste from clipboard
+            match clipboard::read_clipboard() {
+                Ok(ClipboardContent::Image { data, mime_type }) => {
+                    app.add_attachment(ImageAttachment {
+                        filename: "clipboard".to_string(),
+                        mime_type,
+                        data,
+                    });
+                }
+                Ok(ClipboardContent::Text(text)) => {
+                    // Check if it's a path to an image file
+                    if let Some(path) = clipboard::try_parse_image_path(&text) {
+                        if let Some((filename, mime_type, data)) =
+                            clipboard::load_image_from_path(&path)
+                        {
+                            app.add_attachment(ImageAttachment {
+                                filename,
+                                mime_type,
+                                data,
+                            });
+                        } else {
+                            // Not a valid image, paste as text
+                            for c in text.chars() {
+                                app.input_char(c);
+                            }
+                        }
+                    } else {
+                        // Regular text, paste it
+                        for c in text.chars() {
+                            app.input_char(c);
+                        }
+                    }
+                }
+                Ok(ClipboardContent::None) | Err(_) => {}
+            }
+        }
+        AsyncAction::OpenFolderPicker(path) => {
+            app.open_folder_picker(path.clone());
+            let entries = scan_folder_entries(&path).await;
+            app.set_folder_entries(entries);
+        }
+        AsyncAction::RefreshFolderPicker => {
+            if let Some(picker) = &app.folder_picker {
+                let entries = scan_folder_entries(&picker.current_dir).await;
+                app.set_folder_entries(entries);
+            }
+        }
+        AsyncAction::FolderPickerSelect => {
+            if let Some(picker) = &app.folder_picker
+                && let Some(entry) = picker.selected_entry()
+            {
+                if entry.is_parent {
+                    // Go up
+                    if app.folder_picker_go_up() && let Some(picker) = &app.folder_picker {
+                        let entries = scan_folder_entries(&picker.current_dir).await;
+                        app.set_folder_entries(entries);
+                    }
+                } else {
+                    let path = entry.path.clone();
+                    app.close_folder_picker();
+                    let agents = check_all_agents();
+                    app.open_agent_picker(path, false, agents);
+                }
+            }
+        }
+        AsyncAction::OpenWorktreePicker => {
+            let worktree_dir = app.worktree_config.worktree_dir.clone();
+            let worktree_entries = scan_worktrees(&worktree_dir, false).await;
+            app.open_worktree_picker(worktree_entries);
+        }
+        AsyncAction::WorktreePickerSelect => {
+            if let Some(picker) = &app.worktree_picker
+                && let Some(entry) = picker.selected_entry()
+            {
+                if entry.is_create_new {
+                    // Create new worktree - go to folder picker
+                    app.close_worktree_picker();
+                    let start = app.start_dir.clone();
+                    app.open_worktree_folder_picker(start.clone());
+                    let entries = scan_folder_entries(&start).await;
+                    app.set_folder_entries(entries);
+                } else {
+                    // Open existing worktree
+                    let path = entry.path.clone();
+                    app.close_worktree_picker();
+                    let agents = check_all_agents();
+                    app.open_agent_picker(path, true, agents);
+                }
+            }
+        }
+        AsyncAction::WorktreePickerCleanup => {
+            let worktree_dir = app.worktree_config.worktree_dir.clone();
+            app.close_worktree_picker();
+            let worktree_entries = scan_worktrees(&worktree_dir, true).await;
+            let entries: Vec<CleanupEntry> = worktree_entries
+                .iter()
+                .filter(|e| !e.is_create_new)
+                .map(|e| {
+                    let branch = e.name.split_once('-').map(|(_, b)| b.to_string());
+                    CleanupEntry {
+                        path: e.path.clone(),
+                        branch,
+                        is_clean: e.is_clean,
+                        is_merged: e.is_merged,
+                        selected: false,
+                        is_deleting: false,
+                    }
+                })
+                .collect();
+            if !entries.is_empty() {
+                app.open_worktree_cleanup(worktree_dir, entries);
+            }
+        }
+        AsyncAction::OpenAgentPicker { cwd, is_worktree } => {
+            let agents = check_all_agents();
+            app.open_agent_picker(cwd, is_worktree, agents);
+        }
+        AsyncAction::AgentPickerSelect => {
+            if let Some(picker) = &app.agent_picker
+                && let Some(agent_type) = picker.selected_agent()
+            {
+                let cwd = picker.cwd.clone();
+                let is_worktree = picker.is_worktree;
+                app.close_agent_picker();
+                spawn_agent_in_dir(app, agent_tx, agent_commands, agent_type, cwd, is_worktree)
+                    .await?;
+            }
+        }
+        AsyncAction::SessionPickerSelect => {
+            // Session resume not yet implemented in ACP
+        }
+        AsyncAction::SubmitBranchInput => {
+            if let Some(branch_input) = &app.branch_input {
+                let repo_path = branch_input.repo_path.clone();
+                let branch = branch_input.get_input();
+                app.close_branch_input();
+
+                // Create worktree
+                match git::create_worktree(&repo_path, &branch, &app.worktree_config.worktree_dir)
+                    .await
+                {
+                    Ok(worktree_path) => {
+                        let agents = check_all_agents();
+                        app.open_agent_picker(worktree_path, true, agents);
+                    }
+                    Err(e) => {
+                        log::log(&format!("Failed to create worktree: {}", e));
+                    }
+                }
+            }
+        }
+        AsyncAction::WorktreeCleanupExecute => {
+            if let Some(cleanup) = &mut app.worktree_cleanup {
+                let delete_branches = cleanup.delete_branches;
+                let selected: Vec<_> = cleanup
+                    .selected_entries()
+                    .iter()
+                    .map(|e| (e.path.clone(), e.branch.clone()))
+                    .collect();
+
+                // Mark selected entries as deleting
+                for entry in &mut cleanup.entries {
+                    if entry.selected {
+                        entry.is_deleting = true;
+                    }
+                }
+
+                // Spawn async deletion tasks for each selected worktree
+                for (worktree_path, branch) in selected {
+                    let tx = app_event_tx.clone();
+                    tokio::spawn(async move {
+                        // Get the actual git repo for this worktree
+                        let Some(parent_repo) = get_worktree_parent_repo(&worktree_path).await
+                        else {
+                            let _ = tx
+                                .send(AppEvent::WorktreeDeletionFailed(
+                                    worktree_path.clone(),
+                                    "Failed to find parent repo".to_string(),
+                                ))
+                                .await;
+                            return;
+                        };
+
+                        // Remove worktree
+                        if let Err(e) =
+                            git::remove_worktree(&parent_repo, &worktree_path, false).await
+                        {
+                            let _ = tx
+                                .send(AppEvent::WorktreeDeletionFailed(
+                                    worktree_path.clone(),
+                                    e.to_string(),
+                                ))
+                                .await;
+                            return;
+                        }
+                        log::log(&format!("Removed worktree: {}", worktree_path.display()));
+
+                        // Delete branch if requested
+                        if delete_branches && let Some(branch_name) = branch {
+                            if let Err(e) =
+                                git::delete_branch(&parent_repo, &branch_name, false).await
+                            {
+                                log::log(&format!(
+                                    "Failed to delete branch {}: {}",
+                                    branch_name, e
+                                ));
+                            } else {
+                                log::log(&format!("Deleted branch: {}", branch_name));
+                            }
+                        }
+
+                        // Signal success
+                        let _ = tx.send(AppEvent::WorktreeDeleted(worktree_path)).await;
+                    });
+                }
+            }
+        }
+        AsyncAction::SpawnAgent {
+            agent_type,
+            cwd,
+            is_worktree,
+        } => {
+            spawn_agent_in_dir(app, agent_tx, agent_commands, agent_type, cwd, is_worktree).await?;
+        }
+        AsyncAction::DuplicateSession => {
+            if let Some(session) = app.sessions.selected_session() {
+                let agent_type = session.agent_type;
+                let cwd = session.cwd.clone();
+                let is_worktree = session.is_worktree;
+                spawn_agent_in_dir(app, agent_tx, agent_commands, agent_type, cwd, is_worktree)
+                    .await?;
+            }
+        }
+        AsyncAction::ClearSession => {
+            if let Some(session) = app.sessions.selected_session() {
+                let agent_type = session.agent_type;
+                let cwd = session.cwd.clone();
+                let is_worktree = session.is_worktree;
+                let old_session_id = session.id.clone();
+
+                // Remove agent command channel
+                agent_commands.remove(&old_session_id);
+
+                // Kill the old session
+                app.kill_selected_session();
+
+                // Close the confirmation dialog
+                app.close_clear_confirm();
+
+                // Spawn a new session with the same settings
+                spawn_agent_in_dir(app, agent_tx, agent_commands, agent_type, cwd, is_worktree)
+                    .await?;
+            }
+        }
+        AsyncAction::KillSession => {
+            if let Some(session) = app.sessions.selected_session() {
+                let session_id = session.id.clone();
+                agent_commands.remove(&session_id);
+            }
+            app.kill_selected_session();
+        }
+        AsyncAction::SubmitBugReport => {
+            if let Some(bug_report) = &app.bug_report {
+                let description = bug_report.get_input();
+                app.close_bug_report();
+
+                // TODO: Implement bug report submission
+                log::log(&format!("Bug report submitted: {}", description));
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn send_prompt(
