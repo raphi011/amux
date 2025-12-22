@@ -138,6 +138,16 @@ fn format_agent_capabilities(caps: &serde_json::Value) -> String {
 async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
     let mut entries = vec![];
 
+    // Add current directory entry
+    let current_git_branch = get_git_branch_if_repo(dir).await;
+    entries.push(FolderEntry {
+        name: ". (current folder)".to_string(),
+        path: dir.to_path_buf(),
+        git_branch: current_git_branch,
+        is_parent: false,
+        is_current: true,
+    });
+
     // Add parent directory entry if not at root
     if dir.parent().is_some() {
         entries.push(FolderEntry {
@@ -145,6 +155,7 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
             path: dir.parent().unwrap().to_path_buf(),
             git_branch: None,
             is_parent: true,
+            is_current: false,
         });
     }
 
@@ -174,6 +185,7 @@ async fn scan_folder_entries(dir: &std::path::Path) -> Vec<FolderEntry> {
                 path,
                 git_branch,
                 is_parent: false,
+                is_current: false,
             });
         }
     }
