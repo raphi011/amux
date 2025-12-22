@@ -400,18 +400,27 @@ async fn submit_bug_report(
     Ok(())
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn print_help() {
+    println!("amux {VERSION} - Terminal multiplexer for AI coding agents
+
+USAGE:
+    amux [OPTIONS] [DIRECTORY]
+
+ARGS:
+    [DIRECTORY]    Start directory for new sessions (default: current directory)
+
+OPTIONS:
+    -w, --worktree-dir <PATH>    Directory for git worktrees
+    -V, --version                Print version information
+    -h, --help                   Print this help message
+");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging and panic hook
-    let (log_path, session_id) = if let Ok((log_path, session_id)) = log::init() {
-        log::log(&format!("Log file: {}", log_path.display()));
-        log::install_panic_hook();
-        (Some(log_path), Some(session_id))
-    } else {
-        (None, None)
-    };
-
-    // Parse CLI arguments
+    // Parse CLI arguments first (before initializing terminal)
     let args: Vec<String> = std::env::args().collect();
     let mut start_dir = std::env::current_dir().unwrap_or_default();
     let mut worktree_dir_override: Option<std::path::PathBuf> = None;
@@ -419,6 +428,14 @@ async fn main() -> Result<()> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--version" | "-V" => {
+                println!("amux {VERSION}");
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                print_help();
+                return Ok(());
+            }
             "--worktree-dir" | "-w" => {
                 if i + 1 < args.len() {
                     let path = std::path::PathBuf::from(&args[i + 1]);
@@ -452,6 +469,15 @@ async fn main() -> Result<()> {
         }
         i += 1;
     }
+
+    // Initialize logging and panic hook
+    let (log_path, session_id) = if let Ok((log_path, session_id)) = log::init() {
+        log::log(&format!("Log file: {}", log_path.display()));
+        log::install_panic_hook();
+        (Some(log_path), Some(session_id))
+    } else {
+        (None, None)
+    };
 
     // Load config
     let config = config::Config::load();
@@ -1632,6 +1658,14 @@ where
                                                 session.pending_question = None;
                                                 session.state = SessionState::Prompting;
                                             }
+                                    }
+                                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                        // Shift+Enter: insert newline
+                                        app.input_char('\n');
+                                    }
+                                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                        // Ctrl+J: insert newline (traditional Unix)
+                                        app.input_char('\n');
                                     }
                                     KeyCode::Enter => {
                                         let text = app.take_input();
