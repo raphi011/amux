@@ -245,9 +245,6 @@ pub fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::InputDeleteWordBack
         }
-        KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
-            Action::InputDeleteWordBack
-        }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
             Action::InputDeleteWordForward
         }

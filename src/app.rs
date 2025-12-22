@@ -98,6 +98,7 @@ impl FolderPickerState {
 /// A resumable session from Claude's storage
 #[derive(Debug, Clone)]
 pub struct ResumableSession {
+    #[allow(dead_code)] // TODO: Session resume feature
     pub session_id: String,
     pub cwd: PathBuf,
     pub first_prompt: Option<String>,
@@ -118,10 +119,6 @@ impl SessionPickerState {
             sessions,
             selected: 0,
         }
-    }
-
-    pub fn selected_session(&self) -> Option<&ResumableSession> {
-        self.selected_item()
     }
 }
 
@@ -282,49 +279,10 @@ impl AgentPickerState {
         self.selected_item().map(|a| a.agent_type)
     }
 
-    /// Check if the selected agent is available
-    pub fn selected_is_available(&self) -> bool {
-        self.selected_item()
-            .map(|a| a.is_available())
-            .unwrap_or(false)
-    }
-
     /// Check if any agent is available
     #[allow(dead_code)]
     pub fn any_available(&self) -> bool {
         self.agents.iter().any(|a| a.is_available())
-    }
-
-    /// Select next available agent (skips unavailable ones)
-    pub fn select_next_available(&mut self) {
-        if self.agents.is_empty() {
-            return;
-        }
-        let len = self.agents.len();
-        for offset in 1..=len {
-            let idx = (self.selected + offset) % len;
-            if self.agents[idx].is_available() {
-                self.selected = idx;
-                return;
-            }
-        }
-        // No available agents found, stay in place
-    }
-
-    /// Select previous available agent (skips unavailable ones)
-    pub fn select_prev_available(&mut self) {
-        if self.agents.is_empty() {
-            return;
-        }
-        let len = self.agents.len();
-        for offset in 1..=len {
-            let idx = (self.selected + len - offset) % len;
-            if self.agents[idx].is_available() {
-                self.selected = idx;
-                return;
-            }
-        }
-        // No available agents found, stay in place
     }
 }
 
@@ -458,10 +416,6 @@ impl WorktreeCleanupState {
         self.entries.iter().filter(|e| e.selected).collect()
     }
 
-    pub fn has_selection(&self) -> bool {
-        self.entries.iter().any(|e| e.selected)
-    }
-
     pub fn cleanable_count(&self) -> usize {
         self.entries
             .iter()
@@ -499,18 +453,6 @@ pub struct BranchInputState {
 }
 
 impl BranchInputState {
-    pub fn new(repo_path: PathBuf, branches: Vec<BranchEntry>) -> Self {
-        Self {
-            repo_path,
-            input: String::new(),
-            cursor_position: 0,
-            filtered: branches.clone(),
-            branches,
-            selected: 0,
-            show_autocomplete: true,
-        }
-    }
-
     /// Filter branches based on current input
     pub fn update_filter(&mut self) {
         let query = self.input.to_lowercase();
@@ -617,9 +559,6 @@ impl BugReportState {
         self.cursor_position = 0;
     }
 
-    pub fn input_end(&mut self) {
-        self.cursor_position = self.description.len();
-    }
 }
 
 /// Configuration for git worktrees
@@ -987,11 +926,6 @@ impl App {
     }
 
     /// Open branch input with autocomplete
-    pub fn open_branch_input(&mut self, repo_path: PathBuf, branches: Vec<BranchEntry>) {
-        self.branch_input = Some(BranchInputState::new(repo_path, branches));
-        self.input_mode = InputMode::BranchInput;
-    }
-
     /// Close branch input
     pub fn close_branch_input(&mut self) {
         self.branch_input = None;
@@ -1044,16 +978,6 @@ impl App {
     /// Close the clear session confirmation dialog
     pub fn close_clear_confirm(&mut self) {
         self.input_mode = InputMode::Normal;
-    }
-
-    /// Take the bug report description (for submission)
-    pub fn take_bug_report(&mut self) -> Option<(String, PathBuf)> {
-        if let Some(state) = self.bug_report.take() {
-            self.input_mode = InputMode::Normal;
-            Some((state.description, state.log_path))
-        } else {
-            None
-        }
     }
 
     /// Scroll current session up
