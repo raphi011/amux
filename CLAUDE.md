@@ -123,7 +123,7 @@ Logs are written to `~/.amux/logs/amux_<timestamp>.log` containing:
 ## Key Bindings
 
 - `i` - Insert mode (type message)
-- `Esc` - Normal mode
+- `Esc` - Normal mode (or cancel running prompt)
 - `j/k` - Navigate sessions
 - `1-9` - Select session by number
 - `n` - New session
@@ -147,9 +147,8 @@ These features require ACP spec/agent support that doesn't exist yet:
 
 - **Token usage** - Display input/output tokens per session. ACP doesn't currently expose token counts in session updates.
 - **Session resume** - Resume previous sessions. Requires `session/load` ACP support which is not yet implemented.
-- **Prompt cancellation** - Esc to cancel running prompts. Cancellation is still a draft feature in the ACP spec (see protocol/draft/cancellation) and agents don't honor `$/cancel_request`. Workaround: use `c` to clear/restart the session.
 - **Clarifying questions** - Agent asks follow-up questions during planning or complex tasks. UI support exists (`session/ask_user`) but this is a Claude Code extension not yet implemented by agents.
-- **Extended thinking** - Display agent reasoning/thinking. The ACP spec only defines `agent_message_chunk` for streamed text; there is no `agent_thought_chunk` update type. Code has support ready if ACP adds this.
+- **Extended thinking (Claude Code)** - Display agent reasoning/thinking. Gemini CLI sends `agent_thought_chunk` updates which are displayed. Claude Code does not yet support this.
 
 ## Development
 
