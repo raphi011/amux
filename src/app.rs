@@ -83,6 +83,12 @@ pub struct FolderPickerState {
     pub current_dir: PathBuf,
     pub entries: Vec<FolderEntry>,
     pub selected: usize,
+    /// All entries (unfiltered)
+    pub all_entries: Vec<FolderEntry>,
+    /// Filter query string
+    pub query: String,
+    /// Cursor position in the query input
+    pub query_cursor: usize,
 }
 
 impl FolderPickerState {
@@ -91,7 +97,91 @@ impl FolderPickerState {
             current_dir: dir,
             entries: vec![],
             selected: 0,
+            all_entries: vec![],
+            query: String::new(),
+            query_cursor: 0,
         }
+    }
+
+    /// Update the filtered list based on the current query
+    pub fn update_filter(&mut self) {
+        let query_lower = self.query.to_lowercase();
+        self.entries = self
+            .all_entries
+            .iter()
+            .filter(|e| {
+                // Always show parent directory entry
+                e.is_parent || e.name.to_lowercase().contains(&query_lower)
+            })
+            .cloned()
+            .collect();
+
+        // Adjust selected index to stay within bounds
+        if self.entries.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.entries.len() - 1);
+        }
+    }
+
+    /// Add a character to the query
+    pub fn query_input_char(&mut self, c: char) {
+        self.query.insert(self.query_cursor, c);
+        self.query_cursor += c.len_utf8();
+        self.update_filter();
+    }
+
+    /// Delete character before cursor in query
+    pub fn query_backspace(&mut self) {
+        if self.query_cursor > 0 {
+            let mut new_pos = self.query_cursor - 1;
+            while new_pos > 0 && !self.query.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.query.remove(new_pos);
+            self.query_cursor = new_pos;
+            self.update_filter();
+        }
+    }
+
+    /// Delete character at cursor in query
+    pub fn query_delete(&mut self) {
+        if self.query_cursor < self.query.len() {
+            self.query.remove(self.query_cursor);
+            self.update_filter();
+        }
+    }
+
+    /// Move query cursor left
+    pub fn query_left(&mut self) {
+        if self.query_cursor > 0 {
+            let mut new_pos = self.query_cursor - 1;
+            while new_pos > 0 && !self.query.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.query_cursor = new_pos;
+        }
+    }
+
+    /// Move query cursor right
+    pub fn query_right(&mut self) {
+        if self.query_cursor < self.query.len() {
+            let mut new_pos = self.query_cursor + 1;
+            while new_pos < self.query.len() && !self.query.is_char_boundary(new_pos) {
+                new_pos += 1;
+            }
+            self.query_cursor = new_pos;
+        }
+    }
+
+    /// Move cursor to start of query
+    pub fn query_home(&mut self) {
+        self.query_cursor = 0;
+    }
+
+    /// Move cursor to end of query
+    pub fn query_end(&mut self) {
+        self.query_cursor = self.query.len();
     }
 }
 
@@ -558,7 +648,6 @@ impl BugReportState {
     pub fn input_home(&mut self) {
         self.cursor_position = 0;
     }
-
 }
 
 /// Configuration for git worktrees
@@ -847,7 +936,10 @@ impl App {
     /// Update folder picker entries (called after scanning directory)
     pub fn set_folder_entries(&mut self, entries: Vec<FolderEntry>) {
         if let Some(picker) = &mut self.folder_picker {
-            picker.entries = entries;
+            picker.all_entries = entries;
+            picker.query.clear();
+            picker.query_cursor = 0;
+            picker.update_filter();
             picker.selected = 0;
         }
     }

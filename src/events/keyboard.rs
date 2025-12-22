@@ -317,12 +317,20 @@ pub fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
 
 pub fn handle_folder_picker_mode(key: KeyEvent) -> Action {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
-        KeyCode::Char('j') | KeyCode::Down => Action::FolderPickerDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::FolderPickerUp,
-        KeyCode::Char('l') | KeyCode::Right => Action::FolderPickerEnterDir,
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => Action::FolderPickerGoUp,
+        KeyCode::Esc => Action::CloseFolderPicker,
+        KeyCode::Down => Action::FolderPickerDown,
+        KeyCode::Up => Action::FolderPickerUp,
+        KeyCode::Right => Action::FolderPickerEnterDir,
+        KeyCode::Left => Action::FolderPickerGoUp,
         KeyCode::Enter => Action::FolderPickerSelect,
+
+        // Filter input
+        KeyCode::Char(c) => Action::FolderPickerInputChar(c),
+        KeyCode::Backspace => Action::FolderPickerInputBackspace,
+        KeyCode::Delete => Action::FolderPickerInputDelete,
+        KeyCode::Home => Action::FolderPickerInputHome,
+        KeyCode::End => Action::FolderPickerInputEnd,
+
         _ => Action::None,
     }
 }
@@ -330,12 +338,20 @@ pub fn handle_folder_picker_mode(key: KeyEvent) -> Action {
 pub fn handle_worktree_folder_picker_mode(key: KeyEvent) -> Action {
     // Same as folder picker but with different selection behavior
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
-        KeyCode::Char('j') | KeyCode::Down => Action::FolderPickerDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::FolderPickerUp,
-        KeyCode::Char('l') | KeyCode::Right => Action::FolderPickerEnterDir,
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => Action::FolderPickerGoUp,
+        KeyCode::Esc => Action::CloseFolderPicker,
+        KeyCode::Down => Action::FolderPickerDown,
+        KeyCode::Up => Action::FolderPickerUp,
+        KeyCode::Right => Action::FolderPickerEnterDir,
+        KeyCode::Left => Action::FolderPickerGoUp,
         KeyCode::Enter => Action::FolderPickerSelect, // Will be handled specially for worktrees
+
+        // Filter input
+        KeyCode::Char(c) => Action::FolderPickerInputChar(c),
+        KeyCode::Backspace => Action::FolderPickerInputBackspace,
+        KeyCode::Delete => Action::FolderPickerInputDelete,
+        KeyCode::Home => Action::FolderPickerInputHome,
+        KeyCode::End => Action::FolderPickerInputEnd,
+
         _ => Action::None,
     }
 }
@@ -413,12 +429,20 @@ pub fn handle_worktree_cleanup_mode(key: KeyEvent) -> Action {
 pub fn handle_worktree_cleanup_repo_picker_mode(key: KeyEvent) -> Action {
     // Same as folder picker
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::CloseFolderPicker,
-        KeyCode::Char('j') | KeyCode::Down => Action::FolderPickerDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::FolderPickerUp,
-        KeyCode::Char('l') | KeyCode::Right => Action::FolderPickerEnterDir,
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => Action::FolderPickerGoUp,
+        KeyCode::Esc => Action::CloseFolderPicker,
+        KeyCode::Down => Action::FolderPickerDown,
+        KeyCode::Up => Action::FolderPickerUp,
+        KeyCode::Right => Action::FolderPickerEnterDir,
+        KeyCode::Left => Action::FolderPickerGoUp,
         KeyCode::Enter => Action::FolderPickerSelect,
+
+        // Filter input
+        KeyCode::Char(c) => Action::FolderPickerInputChar(c),
+        KeyCode::Backspace => Action::FolderPickerInputBackspace,
+        KeyCode::Delete => Action::FolderPickerInputDelete,
+        KeyCode::Home => Action::FolderPickerInputHome,
+        KeyCode::End => Action::FolderPickerInputEnd,
+
         _ => Action::None,
     }
 }

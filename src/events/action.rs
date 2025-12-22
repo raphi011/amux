@@ -168,6 +168,20 @@ pub enum Action {
     FolderPickerUp,
     /// Navigate folder picker down
     FolderPickerDown,
+    /// Input character into folder picker filter
+    FolderPickerInputChar(char),
+    /// Delete character in folder picker filter
+    FolderPickerInputBackspace,
+    /// Delete at cursor in folder picker filter
+    FolderPickerInputDelete,
+    /// Move cursor left in folder picker filter
+    FolderPickerInputLeft,
+    /// Move cursor right in folder picker filter
+    FolderPickerInputRight,
+    /// Move cursor to start in folder picker filter
+    FolderPickerInputHome,
+    /// Move cursor to end in folder picker filter
+    FolderPickerInputEnd,
 
     // === Worktree picker ===
     /// Navigate worktree picker up

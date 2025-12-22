@@ -1881,6 +1881,41 @@ async fn process_action(
         FolderPickerSelect => {
             return Some(AsyncAction::FolderPickerSelect);
         }
+        FolderPickerInputChar(c) => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_input_char(c);
+            }
+        }
+        FolderPickerInputBackspace => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_backspace();
+            }
+        }
+        FolderPickerInputDelete => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_delete();
+            }
+        }
+        FolderPickerInputLeft => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_left();
+            }
+        }
+        FolderPickerInputRight => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_right();
+            }
+        }
+        FolderPickerInputHome => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_home();
+            }
+        }
+        FolderPickerInputEnd => {
+            if let Some(picker) = &mut app.folder_picker {
+                picker.query_end();
+            }
+        }
 
         // === Worktree picker ===
         OpenWorktreePicker => {
@@ -2781,8 +2816,8 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                     SessionUpdate::CurrentModeUpdate { current_mode_id } => {
                         session.current_mode = Some(current_mode_id);
                     }
-                    SessionUpdate::AvailableCommandsUpdate => {
-                        // Silently ignore - not needed for UI
+                    SessionUpdate::AvailableCommandsUpdate { commands } => {
+                        session.available_commands = commands;
                     }
                     SessionUpdate::Other { raw_type } => {
                         session.add_output(

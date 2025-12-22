@@ -1346,6 +1346,14 @@ pub fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::raw("")); // spacing
 
+        // Filter input line
+        let filter_label = "Filter: ";
+        lines.push(Line::from(vec![
+            Span::styled(filter_label, Style::new().fg(TEXT_DIM)),
+            Span::styled(&picker.query, Style::new().fg(TEXT_WHITE)),
+        ]));
+        lines.push(Line::raw("")); // spacing
+
         // List entries
         for (i, entry) in picker.entries.iter().enumerate() {
             let is_selected = i == picker.selected;
@@ -1379,7 +1387,12 @@ pub fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(spans));
         }
 
-        if picker.entries.is_empty() || (picker.entries.len() == 1 && picker.entries[0].is_parent) {
+        if picker.entries.is_empty() {
+            lines.push(Line::styled(
+                "  (no matching directories)",
+                Style::new().fg(TEXT_DIM),
+            ));
+        } else if picker.entries.len() == 1 && picker.entries[0].is_parent {
             lines.push(Line::styled(
                 "  (no subdirectories)",
                 Style::new().fg(TEXT_DIM),
