@@ -57,10 +57,10 @@ Download pre-built binaries from the [releases page](https://github.com/raphi011
 
 You'll need at least one supported agent installed:
 
-| Agent | Installation |
-|-------|--------------|
-| Claude Code | `npx @anthropic-ai/claude-code-acp` |
-| Gemini CLI | `npm install -g @google/gemini-cli` |
+| Agent | Installation | Notes |
+|-------|--------------|-------|
+| Claude Code | `npx @anthropic-ai/claude-code-acp` | Set `CLAUDE_CODE_EXECUTABLE` for custom builds |
+| Gemini CLI | `npm install -g @google/gemini-cli` | |
 
 ## Features
 

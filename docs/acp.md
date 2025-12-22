@@ -17,6 +17,16 @@ Run with:
 ANTHROPIC_API_KEY=sk-... claude-code-acp
 ```
 
+### Using a Custom Claude Build
+
+If you have a custom Claude Code build, you can tell the ACP adapter to use it by setting the `CLAUDE_CODE_EXECUTABLE` environment variable:
+
+```bash
+export CLAUDE_CODE_EXECUTABLE=/path/to/your/custom/claude
+```
+
+Then run amux as normal. The adapter will use your custom Claude executable instead of the default SDK CLI.
+
 ## Protocol Flow
 
 ```

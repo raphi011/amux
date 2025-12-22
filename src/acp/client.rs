@@ -85,13 +85,21 @@ impl AgentConnection {
         cwd: &Path,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<Self> {
-        let mut child = Command::new(agent_type.command())
-            .args(agent_type.args())
+        let mut cmd = Command::new(agent_type.command());
+        cmd.args(agent_type.args())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+
+        // For Claude Code ACP adapter, pass custom Claude executable if available
+        if matches!(agent_type, AgentType::ClaudeCode) {
+            if let Ok(claude_path) = std::env::var("CLAUDE_CODE_EXECUTABLE") {
+                cmd.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+            }
+        }
+
+        let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("No stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("No stdout"))?;
