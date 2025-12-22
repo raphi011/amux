@@ -8,10 +8,18 @@ on:
 
 jobs:
   nix:
-    name: Nix Build
+    name: Nix Build (${{ matrix.arch }})
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            arch: x86_64-linux
+          - os: ubuntu-24.04-arm
+            arch: aarch64-linux
+          - os: macos-latest
+            arch: aarch64-darwin
+          - os: macos-13
+            arch: x86_64-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +41,15 @@ jobs:
           ./result/bin/amux --help
 
   homebrew:
-    name: Homebrew Formula
-    runs-on: macos-latest
+    name: Homebrew Formula (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-13
+            arch: amd64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +62,7 @@ jobs:
       - name: Create tarball
         run: |
           cd target/release
-          tar czvf amux-darwin-arm64.tar.gz amux
+          tar czvf amux-darwin-${{ matrix.arch }}.tar.gz amux
 
       - name: Audit formula
         run: |
@@ -62,11 +77,11 @@ jobs:
           mkdir -p $(brew --repository)/Library/Taps/local/homebrew-amux/Formula
           
           # Modify formula to use local tarball
-          sed 's|https://github.com/raphi011/amux/releases/download/v#{version}/amux-darwin-arm64.tar.gz|file://'$PWD'/target/release/amux-darwin-arm64.tar.gz|' Formula/amux.rb > $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
+          sed 's|https://github.com/raphi011/amux/releases/download/v#{version}/amux-darwin-${{ matrix.arch }}.tar.gz|file://'$PWD'/target/release/amux-darwin-${{ matrix.arch }}.tar.gz|' Formula/amux.rb > $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
           
           # Update sha256 for local build
-          LOCAL_SHA=$(shasum -a 256 target/release/amux-darwin-arm64.tar.gz | cut -d' ' -f1)
-          sed -i '' "s/sha256 \".*\" # darwin-arm64/sha256 \"${LOCAL_SHA}\" # darwin-arm64/" $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
+          LOCAL_SHA=$(shasum -a 256 target/release/amux-darwin-${{ matrix.arch }}.tar.gz | cut -d' ' -f1)
+          sed -i '' "s/sha256 \".*\" # darwin-${{ matrix.arch }}/sha256 \"${LOCAL_SHA}\" # darwin-${{ matrix.arch }}/" $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
           
           # Install from local tap
           brew install local/amux/amux
