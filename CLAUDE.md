@@ -146,9 +146,19 @@ Logs are written to `~/.amux/logs/amux_<timestamp>.log` containing:
 These features require ACP spec/agent support that doesn't exist yet:
 
 - **Token usage** - Display input/output tokens per session. ACP doesn't currently expose token counts in session updates.
-- **Session resume** - Resume previous sessions. Requires `session/load` ACP support which is not yet implemented.
 - **Clarifying questions** - Agent asks follow-up questions during planning or complex tasks. UI support exists (`session/ask_user`) but this is a Claude Code extension not yet implemented by agents.
 - **Extended thinking (Claude Code)** - Display agent reasoning/thinking. Gemini CLI sends `agent_thought_chunk` updates which are displayed. Claude Code does not yet support this.
+
+## ACP Draft Features
+
+These features are defined in ACP RFDs (Requests for Dialog) but are in draft status. The crate may support them behind unstable feature flags:
+
+- **Session resume** (`session/resume`) - Resume previous sessions without replaying history. Agent reports capability via `sessionCapabilities.resume`. Available in `agent-client-protocol` crate with `unstable_session_resume` feature flag.
+- **Session list** (`session/list`) - List existing sessions with optional cwd filter and pagination.
+- **Session fork** (`session/fork`) - Fork a session to use current context for summaries/PRs without polluting history.
+- **Session config options** (`session/set_config_option`) - Generic config selectors (modes, models, etc.) defined by agents.
+- **Session info update** (`session_info_update`) - Session metadata updates (title, updatedAt).
+- **Agent telemetry export** - Metrics and telemetry from agents.
 
 ## Development
 
