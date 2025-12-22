@@ -2131,9 +2131,18 @@ async fn spawn_agent_in_dir(
     // Detect git branch and origin
     let branch = get_git_branch(&cwd).await;
     let origin = git::get_origin_url(&cwd).await;
+
+    // Fetch diff stats (comparing current branch to base branch)
+    let diff_stats = if !branch.is_empty() {
+        git::get_diff_stats(&cwd, &branch).await.ok()
+    } else {
+        None
+    };
+
     if let Some(session) = app.sessions.get_by_id_mut(&session_id) {
         session.git_branch = branch;
         session.git_origin = origin;
+        session.diff_stats = diff_stats;
     }
 
     // Convert MCP servers from config format to protocol format

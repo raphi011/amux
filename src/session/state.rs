@@ -343,6 +343,8 @@ pub struct Session {
     pub current_thought: Option<String>,
     /// Whether we've sent an idle notification for this session (reset on new prompt)
     pub idle_notified: bool,
+    /// Git diff statistics (insertions/deletions compared to base branch)
+    pub diff_stats: Option<crate::git::DiffStats>,
 }
 
 /// Re-export ModelInfo for use in session
@@ -417,6 +419,7 @@ impl Session {
             input_cursor: 0,
             current_thought: None,
             idle_notified: false,
+            diff_stats: None,
         }
     }
 
@@ -781,6 +784,7 @@ impl Session {
             input_cursor: 0,
             current_thought: None,
             idle_notified: false,
+            diff_stats: None,
         }
     }
 }

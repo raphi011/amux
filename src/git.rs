@@ -398,3 +398,88 @@ pub async fn delete_branch(repo_path: &Path, branch_name: &str, force: bool) -> 
 
     Ok(())
 }
+
+/// Statistics about git diff
+#[derive(Debug, Clone, Default)]
+pub struct DiffStats {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+/// Get git diff statistics between current branch and base branch (usually origin/main)
+pub async fn get_diff_stats(repo_path: &Path, current_branch: &str) -> Result<DiffStats> {
+    // Get the default branch
+    let base_branch = get_default_branch(repo_path).await?;
+
+    // If we're on the base branch, compare to HEAD
+    if current_branch == base_branch {
+        return Ok(DiffStats::default());
+    }
+
+    // Run: git diff --shortstat origin/<base_branch>...<current_branch>
+    let base_ref = format!("origin/{}", base_branch);
+    let compare_ref = format!("{}...{}", base_ref, current_branch);
+
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--shortstat", &compare_ref])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        // If the comparison fails (e.g., branch doesn't exist remotely yet),
+        // try comparing against local base branch
+        let local_compare = format!("{}...{}", base_branch, current_branch);
+        let output = tokio::process::Command::new("git")
+            .args(["diff", "--shortstat", &local_compare])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            // If that also fails, return empty stats
+            return Ok(DiffStats::default());
+        }
+
+        return parse_diff_stats(&String::from_utf8_lossy(&output.stdout));
+    }
+
+    parse_diff_stats(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse git diff --shortstat output
+/// Example: " 3 files changed, 45 insertions(+), 12 deletions(-)"
+fn parse_diff_stats(output: &str) -> Result<DiffStats> {
+    let output = output.trim();
+
+    // Empty output means no changes
+    if output.is_empty() {
+        return Ok(DiffStats::default());
+    }
+
+    let mut stats = DiffStats::default();
+
+    // Parse files changed
+    if let Some(files_part) = output.split(',').next()
+        && let Some(num_str) = files_part.split_whitespace().next()
+    {
+        stats.files_changed = num_str.parse().unwrap_or(0);
+    }
+
+    // Parse insertions
+    for part in output.split(',') {
+        if part.contains("insertion")
+            && let Some(num_str) = part.split_whitespace().next()
+        {
+            stats.insertions = num_str.parse().unwrap_or(0);
+        }
+        if part.contains("deletion")
+            && let Some(num_str) = part.split_whitespace().next()
+        {
+            stats.deletions = num_str.parse().unwrap_or(0);
+        }
+    }
+
+    Ok(stats)
+}
