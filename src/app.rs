@@ -527,6 +527,13 @@ impl WorktreeConfig {
 /// Spinner frames for loading animation
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// State for a running bash command
+#[derive(Debug, Clone)]
+pub struct RunningBashCommand {
+    pub command: String,
+    pub started_at: std::time::Instant,
+}
+
 /// A clickable region in the UI
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClickRegion {
@@ -604,6 +611,10 @@ pub struct App {
     pub debug_tool_json: bool,
     /// MCP servers to pass to agent sessions
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Whether the input is in bash mode (first char is '!')
+    pub bash_mode: bool,
+    /// Currently running bash command (for timer display)
+    pub running_bash_command: Option<RunningBashCommand>,
 }
 
 impl App {
@@ -635,6 +646,8 @@ impl App {
             session_id: None,
             debug_tool_json: false,
             mcp_servers,
+            bash_mode: false,
+            running_bash_command: None,
         }
     }
 
@@ -1011,6 +1024,12 @@ impl App {
 
     /// Add a character to input buffer
     pub fn input_char(&mut self, c: char) {
+        // Check if typing '!' as first character enters bash mode
+        if c == '!' && self.input_buffer.is_empty() && self.cursor_position == 0 {
+            self.bash_mode = true;
+            // Don't add the '!' to the buffer - it's just the mode indicator
+            return;
+        }
         self.input_buffer.insert(self.cursor_position, c);
         self.cursor_position += c.len_utf8();
     }
@@ -1025,6 +1044,9 @@ impl App {
             }
             self.input_buffer.remove(new_pos);
             self.cursor_position = new_pos;
+        } else if self.bash_mode && self.input_buffer.is_empty() {
+            // Backspace on empty buffer in bash mode exits bash mode
+            self.bash_mode = false;
         }
     }
 
@@ -1167,9 +1189,28 @@ impl App {
         self.cursor_position = 0;
     }
 
-    /// Take the input buffer (clears it)
+    /// Take the input buffer (clears it) and reset bash mode
     pub fn take_input(&mut self) -> String {
         self.cursor_position = 0;
+        self.bash_mode = false;
         std::mem::take(&mut self.input_buffer)
+    }
+
+    /// Check if currently in bash mode
+    pub fn is_bash_mode(&self) -> bool {
+        self.bash_mode
+    }
+
+    /// Start tracking a running bash command
+    pub fn start_bash_command(&mut self, command: String) {
+        self.running_bash_command = Some(RunningBashCommand {
+            command,
+            started_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Complete the running bash command
+    pub fn complete_bash_command(&mut self) {
+        self.running_bash_command = None;
     }
 }

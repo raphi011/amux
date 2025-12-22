@@ -47,6 +47,13 @@ enum AppEvent {
     WorktreeDeleted(std::path::PathBuf),
     /// A worktree deletion failed (path, error message)
     WorktreeDeletionFailed(std::path::PathBuf, String),
+    /// A bash command completed (session_id, command, output, success)
+    BashCommandCompleted {
+        session_id: String,
+        command: String,
+        output: String,
+        success: bool,
+    },
 }
 
 /// Get the current git branch for a directory
@@ -1680,8 +1687,59 @@ where
                                         app.input_char('\n');
                                     }
                                     KeyCode::Enter => {
+                                        let is_bash = app.is_bash_mode();
                                         let text = app.take_input();
-                                        if !text.is_empty() || app.has_attachments() {
+                                        if is_bash && !text.is_empty() {
+                                            // Execute bash command
+                                            if let Some(session) = app.sessions.selected_session() {
+                                                let session_id = session.id.clone();
+                                                let cwd = session.cwd.clone();
+                                                let command = text.clone();
+                                                
+                                                // Add command to output
+                                                let session_idx = app.sessions.selected_index();
+                                                if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                    session.add_output(format!("$ {}", command), OutputType::BashCommand);
+                                                }
+                                                
+                                                // Start tracking the command
+                                                app.start_bash_command(command.clone());
+                                                
+                                                // Execute asynchronously
+                                                let tx = app_event_tx.clone();
+                                                tokio::spawn(async move {
+                                                    let output = tokio::process::Command::new("sh")
+                                                        .arg("-c")
+                                                        .arg(&command)
+                                                        .current_dir(&cwd)
+                                                        .output()
+                                                        .await;
+                                                    
+                                                    let (output_text, success) = match output {
+                                                        Ok(out) => {
+                                                            let stdout = String::from_utf8_lossy(&out.stdout);
+                                                            let stderr = String::from_utf8_lossy(&out.stderr);
+                                                            let combined = if stderr.is_empty() {
+                                                                stdout.to_string()
+                                                            } else if stdout.is_empty() {
+                                                                stderr.to_string()
+                                                            } else {
+                                                                format!("{}\n{}", stdout, stderr)
+                                                            };
+                                                            (combined, out.status.success())
+                                                        }
+                                                        Err(e) => (format!("Error: {}", e), false),
+                                                    };
+                                                    
+                                                    let _ = tx.send(AppEvent::BashCommandCompleted {
+                                                        session_id,
+                                                        command,
+                                                        output: output_text,
+                                                        success,
+                                                    }).await;
+                                                });
+                                            }
+                                        } else if !text.is_empty() || app.has_attachments() {
                                             send_prompt(app, &agent_commands, &text).await;
                                         }
                                         app.exit_insert_mode();
@@ -1934,6 +1992,28 @@ where
                                 entry.is_deleting = false;
                                 entry.selected = false;
                             }
+                        }
+                    }
+                    #[allow(unused_variables)]
+                    AppEvent::BashCommandCompleted { session_id, command, output, success } => {
+                        // Clear the running command tracker
+                        app.complete_bash_command();
+                        
+                        // Find the session and add the output
+                        if let Some(session) = app.sessions.sessions_mut().iter_mut().find(|s| s.id == session_id) {
+                            // Add output lines
+                            if !output.is_empty() {
+                                for line in output.lines() {
+                                    let output_type = if success {
+                                        OutputType::BashOutput
+                                    } else {
+                                        OutputType::Error
+                                    };
+                                    session.add_output(line.to_string(), output_type);
+                                }
+                            }
+                            // Add empty line for spacing
+                            session.add_output(String::new(), OutputType::Text);
                         }
                     }
                 }

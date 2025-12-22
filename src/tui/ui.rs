@@ -864,6 +864,47 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 })
                                 .collect()
                         }
+                        OutputType::BashCommand => {
+                            // Bash command - gold with $ prefix
+                            let wrapped =
+                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                            wrapped
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, text)| {
+                                    if i == 0 {
+                                        Line::from(vec![
+                                            Span::styled(text, Style::new().fg(LOGO_GOLD).bold()),
+                                        ])
+                                    } else {
+                                        Line::from(vec![
+                                            Span::styled("  ", Style::new()),
+                                            Span::styled(text, Style::new().fg(LOGO_GOLD).bold()),
+                                        ])
+                                    }
+                                })
+                                .collect()
+                        }
+                        OutputType::BashOutput => {
+                            // Bash output - dim text with connector
+                            let wrapped =
+                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                            wrapped
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, text)| {
+                                    let prefix = if i == 0 {
+                                        Span::styled("│ ", Style::new().fg(LOGO_GOLD))
+                                    } else {
+                                        Span::styled("│ ", Style::new().fg(LOGO_GOLD))
+                                    };
+                                    Line::from(vec![
+                                        prefix,
+                                        Span::styled(text, Style::new().fg(TEXT_DIM)),
+                                    ])
+                                })
+                                .collect()
+                        }
                     }
                 })
                 .collect();
@@ -986,9 +1027,13 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
     use crate::app::ClickRegion;
 
     let is_insert = app.input_mode == InputMode::Insert;
+    let is_bash_mode = app.is_bash_mode();
     let width = area.width as usize;
 
-    let prompt_style = if is_insert {
+    // Prompt style: gold for bash mode, green for insert, dim otherwise
+    let prompt_style = if is_bash_mode {
+        Style::new().fg(LOGO_GOLD)
+    } else if is_insert {
         Style::new().fg(LOGO_MINT)
     } else {
         Style::new().fg(TEXT_DIM)
@@ -1052,8 +1097,8 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
         attachment_line_count = 1;
     }
 
-    // Always show the prompt
-    let prompt = "> ";
+    // Show '!' for bash mode, '>' for normal prompt
+    let prompt = if is_bash_mode { "! " } else { "> " };
 
     // Wrap the input text
     let content_width = width.saturating_sub(2); // Account for prompt "> "
@@ -1108,6 +1153,14 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Add permission mode indicator line
     // We need to clone/own the strings to avoid borrowing app during the Line construction
+    // Also capture running bash command info before borrowing app
+    let running_bash_info = app.running_bash_command.as_ref().map(|cmd| {
+        let elapsed = cmd.started_at.elapsed();
+        let secs = elapsed.as_secs();
+        let millis = elapsed.subsec_millis() / 100; // tenths of a second
+        (cmd.command.clone(), format!("{}.{}s", secs, millis))
+    });
+
     let mode_line = if let Some(session) = app.selected_session() {
         let mode = session.permission_mode;
         let (mode_text, mode_color) = match mode {
@@ -1127,6 +1180,26 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
             spans.push(Span::styled(
                 model_name.to_string(),
                 Style::new().fg(LOGO_LIGHT_BLUE),
+            ));
+        }
+
+        // Add running bash command timer if present
+        if let Some((command, elapsed)) = &running_bash_info {
+            // Truncate command if too long
+            let max_cmd_len = 30;
+            let display_cmd = if command.len() > max_cmd_len {
+                format!("{}…", &command[..max_cmd_len - 1])
+            } else {
+                command.clone()
+            };
+            spans.push(Span::styled("  ", Style::new()));
+            spans.push(Span::styled(
+                format!("$ {} ", display_cmd),
+                Style::new().fg(LOGO_GOLD),
+            ));
+            spans.push(Span::styled(
+                elapsed.clone(),
+                Style::new().fg(TEXT_DIM),
             ));
         }
 
@@ -1249,6 +1322,11 @@ pub fn render_folder_picker(frame: &mut Frame, area: Rect, app: &App) {
                     },
                 ),
             ];
+
+            // Show "(current)" indicator for the current directory
+            if entry.is_current {
+                spans.push(Span::styled(" (current)", Style::new().fg(TEXT_DIM)));
+            }
 
             // Show git branch if available
             if let Some(branch) = &entry.git_branch {

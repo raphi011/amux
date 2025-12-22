@@ -362,12 +362,14 @@ pub enum OutputType {
         failed: bool,             // Whether the tool call failed
         raw_json: Vec<String>,    // Raw ACP JSON requests for debug rendering
     },
-    ToolOutput,  // Output from a tool (shown with └ connector)
-    DiffAdd,     // Added line in diff (green)
-    DiffRemove,  // Removed line in diff (red)
-    DiffContext, // Context line in diff (dim)
-    DiffHeader,  // Diff header line (e.g. "Added 18 lines, removed 11")
+    ToolOutput,   // Output from a tool (shown with └ connector)
+    DiffAdd,      // Added line in diff (green)
+    DiffRemove,   // Removed line in diff (red)
+    DiffContext,  // Context line in diff (dim)
+    DiffHeader,   // Diff header line (e.g. "Added 18 lines, removed 11")
     Error,
+    BashCommand,  // User's bash command (prefixed with !)
+    BashOutput,   // Output from a bash command
 }
 
 impl Session {
