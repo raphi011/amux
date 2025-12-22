@@ -12,7 +12,6 @@ mod session;
 mod tui;
 
 use anyhow::Result;
-use std::path::PathBuf;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -25,6 +24,7 @@ use futures::{FutureExt, StreamExt};
 use ratatui::prelude::*;
 use std::collections::HashMap;
 use std::io::stdout;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -37,11 +37,11 @@ use app::{
 use clipboard::ClipboardContent;
 use events::Action;
 use events::keyboard::{
-    handle_insert_mode, handle_folder_picker_mode, handle_worktree_folder_picker_mode,
-    handle_worktree_cleanup_repo_picker_mode, handle_worktree_picker_mode,
-    handle_agent_picker_mode, handle_session_picker_mode, handle_branch_input_mode,
-    handle_worktree_cleanup_mode, handle_clear_confirm_mode, handle_bug_report_mode,
-    handle_help_mode,
+    handle_agent_picker_mode, handle_branch_input_mode, handle_bug_report_mode,
+    handle_clear_confirm_mode, handle_folder_picker_mode, handle_help_mode, handle_insert_mode,
+    handle_session_picker_mode, handle_worktree_cleanup_mode,
+    handle_worktree_cleanup_repo_picker_mode, handle_worktree_folder_picker_mode,
+    handle_worktree_picker_mode,
 };
 use picker::Picker;
 use session::{
@@ -2528,7 +2528,9 @@ async fn handle_async_in_loop(
             {
                 if entry.is_parent {
                     // Go up
-                    if app.folder_picker_go_up() && let Some(picker) = &app.folder_picker {
+                    if app.folder_picker_go_up()
+                        && let Some(picker) = &app.folder_picker
+                    {
                         let entries = scan_folder_entries(&picker.current_dir).await;
                         app.set_folder_entries(entries);
                     }
@@ -2610,15 +2612,17 @@ async fn handle_async_in_loop(
             if let Some(branch_input) = &app.branch_input {
                 let repo_path = branch_input.repo_path.clone();
                 let branch = branch_input.branch_name().to_string();
-                
+
                 // Construct worktree path
                 let repo_name = git::repo_name(&repo_path);
                 let worktree_path = app.worktree_config.worktree_path(&repo_name, &branch);
-                
+
                 app.close_branch_input();
 
                 // Check if branch exists locally or as remote
-                let local_exists = git::branch_exists(&repo_path, &branch).await.unwrap_or(false);
+                let local_exists = git::branch_exists(&repo_path, &branch)
+                    .await
+                    .unwrap_or(false);
                 let remote_exists = git::remote_branch_exists(&repo_path, &branch)
                     .await
                     .unwrap_or(false);
