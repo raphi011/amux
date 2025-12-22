@@ -1925,11 +1925,21 @@ pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &mut App) {
             .title
             .clone()
             .unwrap_or_else(|| "Tool".to_string());
-        lines.push(Line::from(vec![
-            Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)),
-            Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
-            Span::styled(title, Style::new().fg(TEXT_WHITE)),
-        ]));
+        
+        // Parse title as markdown since it often contains backticks
+        let skin = ratskin::RatSkin::default();
+        let parsed_title_lines = skin.parse(
+            ratskin::RatSkin::parse_text(&title),
+            area.width.saturating_sub(25), // Account for prefix width
+        );
+        
+        for (i, mut line) in parsed_title_lines.into_iter().enumerate() {
+            if i == 0 {
+                line.spans.insert(0, Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()));
+                line.spans.insert(0, Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)));
+            }
+            lines.push(line);
+        }
         lines.push(Line::raw(""));
 
         // Options
