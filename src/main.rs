@@ -35,6 +35,7 @@ use app::{
 };
 use clipboard::ClipboardContent;
 use events::Action;
+use events::keyboard::handle_insert_mode;
 use picker::Picker;
 use session::{
     AgentType, OutputType, PendingPermission, PendingQuestion, SessionState, check_all_agents,
@@ -1693,283 +1694,106 @@ where
                                 }
                             }
                             InputMode::Insert => {
-                                // Log all key events in insert mode for debugging
-                                log::log(&format!("Insert mode key: {:?}, modifiers: {:?}", key.code, key.modifiers));
+                                // Use the new Action-based system
+                                let action = handle_insert_mode(&app, key);
 
-                                // Check if there's a pending permission request
-                                let has_permission = app.sessions.selected_session()
-                                    .map(|s| s.pending_permission.is_some())
-                                    .unwrap_or(false);
+                                // Process the action
+                                if let Some(async_action) = process_action(app, action, &agent_commands, &app_event_tx).await {
+                                    match async_action {
+                                        AsyncAction::SubmitPrompt => {
+                                            let is_bash = app.is_bash_mode();
+                                            let text = app.take_input();
+                                            if is_bash && !text.is_empty() {
+                                                // Execute bash command
+                                                if let Some(session) = app.sessions.selected_session() {
+                                                    let session_id = session.id.clone();
+                                                    let cwd = session.cwd.clone();
+                                                    let command = text.clone();
 
-                                // Check if there's a pending question
-                                let has_question = app.sessions.selected_session()
-                                    .map(|s| s.pending_question.is_some())
-                                    .unwrap_or(false);
+                                                    // Add command to output
+                                                    let session_idx = app.sessions.selected_index();
+                                                    if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                                                        session.add_output(format!("$ {}", command), OutputType::BashCommand);
+                                                    }
 
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        if app.bash_mode {
-                                            app.exit_bash_mode();
-                                        } else {
+                                                    // Start tracking the command
+                                                    app.start_bash_command(command.clone());
+
+                                                    // Execute asynchronously
+                                                    let tx = app_event_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        let output = tokio::process::Command::new("sh")
+                                                            .arg("-c")
+                                                            .arg(&command)
+                                                            .current_dir(&cwd)
+                                                            .output()
+                                                            .await;
+
+                                                        let (output_text, success) = match output {
+                                                            Ok(out) => {
+                                                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                                                let combined = if stderr.is_empty() {
+                                                                    stdout.to_string()
+                                                                } else if stdout.is_empty() {
+                                                                    stderr.to_string()
+                                                                } else {
+                                                                    format!("{}\n{}", stdout, stderr)
+                                                                };
+                                                                (combined, out.status.success())
+                                                            }
+                                                            Err(e) => (format!("Error: {}", e), false),
+                                                        };
+
+                                                        let _ = tx.send(AppEvent::BashCommandCompleted {
+                                                            session_id,
+                                                            command,
+                                                            output: output_text,
+                                                            success,
+                                                        }).await;
+                                                    });
+                                                }
+                                            } else if !text.is_empty() || app.has_attachments() {
+                                                send_prompt(app, &agent_commands, &text).await;
+                                            }
                                             app.exit_insert_mode();
-                                            app.clear_attachments();
                                         }
-                                    }
-                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+C: clear input but stay in insert mode
-                                        app.take_input();
-                                        app.clear_attachments();
-                                    }
-                                    KeyCode::Enter if has_permission => {
-                                        // Handle permission approval (same as normal mode)
-                                        if let Some(session) = app.sessions.selected_session_mut()
-                                            && let Some(perm) = &session.pending_permission {
-                                                let option_id = perm.selected_option()
-                                                    .or_else(|| perm.allow_once_option())
-                                                    .map(|o| PermissionOptionId::from(o.option_id.clone()));
-                                                let request_id = perm.request_id;
-                                                let session_id = session.id.clone();
-                                                if let Some(cmd_tx) = agent_commands.get(&session_id) {
-                                                    let _ = cmd_tx.send(AgentCommand::PermissionResponse {
-                                                        request_id,
-                                                        option_id,
-                                                    }).await;
+                                        AsyncAction::PasteClipboard => {
+                                            // Ctrl+V: paste from clipboard
+                                            match clipboard::read_clipboard() {
+                                                Ok(ClipboardContent::Image { data, mime_type }) => {
+                                                    app.add_attachment(ImageAttachment {
+                                                        filename: "clipboard".to_string(),
+                                                        mime_type,
+                                                        data,
+                                                    });
                                                 }
-                                                session.pending_permission = None;
-                                                session.state = SessionState::Prompting;
-                                            }
-                                    }
-                                    KeyCode::Enter if has_question => {
-                                        // Handle question submission (same as normal mode)
-                                        if let Some(session) = app.sessions.selected_session_mut()
-                                            && let Some(question) = &session.pending_question {
-                                                let answer = question.get_answer();
-                                                let request_id = question.request_id;
-                                                let session_id = session.id.clone();
-                                                if let Some(cmd_tx) = agent_commands.get(&session_id) {
-                                                    let _ = cmd_tx.send(AgentCommand::AskUserResponse {
-                                                        request_id,
-                                                        answer,
-                                                    }).await;
-                                                }
-                                                session.pending_question = None;
-                                                session.state = SessionState::Prompting;
-                                            }
-                                    }
-                                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                        // Shift+Enter: insert newline
-                                        app.input_char('\n');
-                                    }
-                                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+J: insert newline (traditional Unix)
-                                        app.input_char('\n');
-                                    }
-                                    KeyCode::Enter => {
-                                        let is_bash = app.is_bash_mode();
-                                        let text = app.take_input();
-                                        if is_bash && !text.is_empty() {
-                                            // Execute bash command
-                                            if let Some(session) = app.sessions.selected_session() {
-                                                let session_id = session.id.clone();
-                                                let cwd = session.cwd.clone();
-                                                let command = text.clone();
-
-                                                // Add command to output
-                                                let session_idx = app.sessions.selected_index();
-                                                if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                                    session.add_output(format!("$ {}", command), OutputType::BashCommand);
-                                                }
-
-                                                // Start tracking the command
-                                                app.start_bash_command(command.clone());
-
-                                                // Execute asynchronously
-                                                let tx = app_event_tx.clone();
-                                                tokio::spawn(async move {
-                                                    let output = tokio::process::Command::new("sh")
-                                                        .arg("-c")
-                                                        .arg(&command)
-                                                        .current_dir(&cwd)
-                                                        .output()
-                                                        .await;
-
-                                                    let (output_text, success) = match output {
-                                                        Ok(out) => {
-                                                            let stdout = String::from_utf8_lossy(&out.stdout);
-                                                            let stderr = String::from_utf8_lossy(&out.stderr);
-                                                            let combined = if stderr.is_empty() {
-                                                                stdout.to_string()
-                                                            } else if stdout.is_empty() {
-                                                                stderr.to_string()
-                                                            } else {
-                                                                format!("{}\n{}", stdout, stderr)
-                                                            };
-                                                            (combined, out.status.success())
+                                                Ok(ClipboardContent::Text(text)) => {
+                                                    // Check if it's a path to an image file
+                                                    if let Some(path) = clipboard::try_parse_image_path(&text) {
+                                                        if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
+                                                            app.add_attachment(ImageAttachment {
+                                                                filename,
+                                                                mime_type,
+                                                                data,
+                                                            });
+                                                        } else {
+                                                            // Not a valid image, paste as text
+                                                            for c in text.chars() {
+                                                                app.input_char(c);
+                                                            }
                                                         }
-                                                        Err(e) => (format!("Error: {}", e), false),
-                                                    };
-
-                                                    let _ = tx.send(AppEvent::BashCommandCompleted {
-                                                        session_id,
-                                                        command,
-                                                        output: output_text,
-                                                        success,
-                                                    }).await;
-                                                });
-                                            }
-                                        } else if !text.is_empty() || app.has_attachments() {
-                                            send_prompt(app, &agent_commands, &text).await;
-                                        }
-                                        app.exit_insert_mode();
-                                    }
-                                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+V: paste from clipboard
-                                        match clipboard::read_clipboard() {
-                                            Ok(ClipboardContent::Image { data, mime_type }) => {
-                                                app.add_attachment(ImageAttachment {
-                                                    filename: "clipboard".to_string(), // Shows as "Image #N" in UI
-                                                    mime_type,
-                                                    data,
-                                                });
-                                            }
-                                            Ok(ClipboardContent::Text(text)) => {
-                                                // Check if it's a path to an image file
-                                                if let Some(path) = clipboard::try_parse_image_path(&text) {
-                                                    if let Some((filename, mime_type, data)) = clipboard::load_image_from_path(&path) {
-                                                        app.add_attachment(ImageAttachment {
-                                                            filename,
-                                                            mime_type,
-                                                            data,
-                                                        });
                                                     } else {
-                                                        // Not a valid image, paste as text
+                                                        // Regular text, paste it
                                                         for c in text.chars() {
                                                             app.input_char(c);
                                                         }
                                                     }
-                                                } else {
-                                                    // Regular text, paste it
-                                                    for c in text.chars() {
-                                                        app.input_char(c);
-                                                    }
                                                 }
+                                                Ok(ClipboardContent::None) | Err(_) => {}
                                             }
-                                            Ok(ClipboardContent::None) | Err(_) => {}
                                         }
                                     }
-                                    KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+X: clear all attachments
-                                        app.clear_attachments();
-                                    }
-                                    KeyCode::Tab => {
-                                        // Cycle permission mode for selected session
-                                        let session_idx = app.sessions.selected_index();
-                                        if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
-                                            session.cycle_permission_mode();
-                                        }
-                                    }
-                                    // Word/line navigation
-                                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+A: jump to start of line
-                                        app.input_home();
-                                    }
-                                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+E: jump to end of line
-                                        app.input_end();
-                                    }
-                                    KeyCode::Home => app.input_home(),
-                                    KeyCode::End => app.input_end(),
-                                    KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+Left: move word left
-                                        app.input_word_left();
-                                    }
-                                    KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+Right: move word right
-                                        app.input_word_right();
-                                    }
-                                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+B: move word left (emacs style)
-                                        app.input_word_left();
-                                    }
-                                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+F: move word right (emacs style)
-                                        app.input_word_right();
-                                    }
-                                    // Word/line deletion
-                                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+W: delete word before cursor
-                                        app.input_delete_word_back();
-                                    }
-                                    KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+Backspace: delete word before cursor
-                                        app.input_delete_word_back();
-                                    }
-                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
-                                        // Alt+D: delete word after cursor
-                                        app.input_delete_word_forward();
-                                    }
-                                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+K: delete to end of line
-                                        app.input_kill_line();
-                                    }
-                                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                        // Ctrl+U: delete to start of line
-                                        app.input_kill_to_start();
-                                    }
-                                    // Attachment navigation
-                                    KeyCode::Up => {
-                                        // Move to attachment selection if there are attachments
-                                        if app.has_attachments() && app.selected_attachment.is_none() {
-                                            app.select_attachments();
-                                        }
-                                    }
-                                    KeyCode::Down => {
-                                        // Move back to input from attachment selection
-                                        if app.selected_attachment.is_some() {
-                                            app.deselect_attachments();
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if app.selected_attachment.is_some() {
-                                            // Delete selected attachment
-                                            app.delete_selected_attachment();
-                                        } else {
-                                            app.input_backspace();
-                                        }
-                                    }
-                                    KeyCode::Delete => {
-                                        if app.selected_attachment.is_some() {
-                                            app.delete_selected_attachment();
-                                        } else {
-                                            app.input_delete();
-                                        }
-                                    }
-                                    KeyCode::Left => {
-                                        log::log(&format!("Left key pressed, cursor_position={}, input_len={}", app.cursor_position, app.input_buffer.len()));
-                                        if app.selected_attachment.is_some() {
-                                            app.attachment_left();
-                                        } else {
-                                            app.input_left();
-                                        }
-                                        log::log(&format!("After input_left, cursor_position={}", app.cursor_position));
-                                    }
-                                    KeyCode::Right => {
-                                        log::log(&format!("Right key pressed, cursor_position={}, input_len={}", app.cursor_position, app.input_buffer.len()));
-                                        if app.selected_attachment.is_some() {
-                                            app.attachment_right();
-                                        } else {
-                                            app.input_right();
-                                        }
-                                        log::log(&format!("After input_right, cursor_position={}", app.cursor_position));
-                                    }
-                                    KeyCode::Char(c) => {
-                                        // Typing deselects attachment and goes back to input
-                                        if app.selected_attachment.is_some() {
-                                            app.deselect_attachments();
-                                        }
-                                        app.input_char(c);
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
@@ -2006,9 +1830,9 @@ where
                                         break; // Modified key (Ctrl+, etc), handle in main loop
                                     }
                                 }
-                                KeyCode::Backspace => { app.input_backspace(); }
-                                KeyCode::Left => { app.input_left(); }
-                                KeyCode::Right => { app.input_right(); }
+                                KeyCode::Backspace if key.modifiers.is_empty() => { app.input_backspace(); }
+                                KeyCode::Left if key.modifiers.is_empty() => { app.input_left(); }
+                                KeyCode::Right if key.modifiers.is_empty() => { app.input_right(); }
                                 _ => break, // Complex key, exit drain loop and let main loop handle
                             }
                         }
@@ -2113,6 +1937,27 @@ where
             // Timeout to keep UI responsive and tick spinner (16ms = ~60 FPS)
             _ = tokio::time::sleep(Duration::from_millis(16)) => {
                 app.tick_spinner();
+
+                // Refresh git diff stats periodically (every 5 seconds)
+                if app.should_refresh_git_stats() {
+                    app.mark_git_refreshed();
+
+                    // Collect sessions to refresh
+                    let sessions_to_refresh: Vec<_> = app.sessions.sessions()
+                        .iter()
+                        .map(|s| (s.id.clone(), s.cwd.clone(), s.git_branch.clone()))
+                        .collect();
+
+                    // Refresh each session's diff stats
+                    for (session_id, cwd, branch) in sessions_to_refresh {
+                        if !branch.is_empty()
+                            && let Ok(stats) = git::get_diff_stats(&cwd, &branch).await
+                            && let Some(session) = app.sessions.get_by_id_mut(&session_id)
+                        {
+                            session.diff_stats = Some(stats);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2440,6 +2285,534 @@ async fn spawn_agent_with_resume(
     });
 
     Ok(())
+}
+
+/// Process an action and apply it to the app state.
+/// Returns Some(AsyncAction) if the action requires async processing (like submitting a prompt).
+#[allow(clippy::too_many_lines)]
+async fn process_action(
+    app: &mut App,
+    action: Action,
+    agent_commands: &HashMap<String, mpsc::Sender<AgentCommand>>,
+    _app_event_tx: &mpsc::Sender<AppEvent>,
+) -> Option<AsyncAction> {
+    use Action::*;
+
+    match action {
+        // === Application ===
+        Quit => {
+            // Will be handled by main loop
+        }
+
+        // === Mode switching ===
+        EnterInsertMode => {
+            if app.sessions.selected_session().is_some() {
+                app.enter_insert_mode();
+            }
+        }
+        ExitInsertMode => {
+            app.exit_insert_mode();
+        }
+        ExitBashMode => {
+            app.exit_bash_mode();
+        }
+        OpenHelp => {
+            app.open_help();
+        }
+        CloseHelp => {
+            app.close_help();
+        }
+
+        // === Session navigation ===
+        NextSession => {
+            app.next_session();
+        }
+        PrevSession => {
+            app.prev_session();
+        }
+        SelectSession(idx) => {
+            app.select_session(idx);
+        }
+
+        // === Input handling ===
+        InputChar(c) => {
+            // Typing deselects attachment
+            if app.selected_attachment.is_some() {
+                app.deselect_attachments();
+            }
+            app.input_char(c);
+        }
+        InputBackspace => {
+            if app.selected_attachment.is_some() {
+                app.delete_selected_attachment();
+            } else {
+                app.input_backspace();
+            }
+        }
+        InputDelete => {
+            if app.selected_attachment.is_some() {
+                app.delete_selected_attachment();
+            } else {
+                app.input_delete();
+            }
+        }
+        InputLeft => {
+            if app.selected_attachment.is_some() {
+                app.attachment_left();
+            } else {
+                app.input_left();
+            }
+        }
+        InputRight => {
+            if app.selected_attachment.is_some() {
+                app.attachment_right();
+            } else {
+                app.input_right();
+            }
+        }
+        InputHome => {
+            app.input_home();
+        }
+        InputEnd => {
+            app.input_end();
+        }
+        InputWordLeft => {
+            app.input_word_left();
+        }
+        InputWordRight => {
+            app.input_word_right();
+        }
+        InputDeleteWordBack => {
+            app.input_delete_word_back();
+        }
+        InputDeleteWordForward => {
+            app.input_delete_word_forward();
+        }
+        InputKillLine => {
+            app.input_kill_line();
+        }
+        InputKillToStart => {
+            app.input_kill_to_start();
+        }
+        InputNewline => {
+            app.input_char('\n');
+        }
+        ClearInput => {
+            app.take_input();
+            app.clear_attachments();
+        }
+        SubmitPrompt => {
+            return Some(AsyncAction::SubmitPrompt);
+        }
+
+        // === Scrolling ===
+        ScrollUp(n) => {
+            app.scroll_up(n);
+        }
+        ScrollDown(n) => {
+            app.scroll_down(n);
+        }
+        ScrollToTop => {
+            app.scroll_to_top();
+        }
+        ScrollToBottom => {
+            app.scroll_to_bottom();
+        }
+
+        // === Permissions ===
+        AllowPermission => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(perm) = &session.pending_permission
+            {
+                let option_id = perm
+                    .selected_option()
+                    .or_else(|| perm.allow_once_option())
+                    .map(|o| PermissionOptionId::from(o.option_id.clone()));
+                let request_id = perm.request_id;
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id,
+                        })
+                        .await;
+                }
+                session.pending_permission = Option::None;
+                session.state = SessionState::Prompting;
+                // Restore saved input if any
+                if let Some((buffer, cursor)) = session.take_saved_input() {
+                    app.input_buffer = buffer;
+                    app.cursor_position = cursor;
+                }
+            }
+        }
+        DenyPermission => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(perm) = &session.pending_permission
+            {
+                let request_id = perm.request_id;
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id: Option::None,
+                        })
+                        .await;
+                }
+                session.pending_permission = Option::None;
+                session.state = SessionState::Idle;
+                // Restore saved input if any
+                if let Some((buffer, cursor)) = session.take_saved_input() {
+                    app.input_buffer = buffer;
+                    app.cursor_position = cursor;
+                }
+            }
+        }
+        PermissionUp => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(perm) = &mut session.pending_permission
+            {
+                perm.select_prev();
+            }
+        }
+        PermissionDown => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(perm) = &mut session.pending_permission
+            {
+                perm.select_next();
+            }
+        }
+        SelectPermissionOption(idx) => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(perm) = &mut session.pending_permission
+                && idx < perm.options.len()
+            {
+                perm.selected = idx;
+                let option_id = perm
+                    .selected_option()
+                    .map(|o| PermissionOptionId::from(o.option_id.clone()));
+                let request_id = perm.request_id;
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id,
+                        })
+                        .await;
+                }
+                session.pending_permission = Option::None;
+                session.state = SessionState::Prompting;
+                // Restore saved input if any
+                if let Some((buffer, cursor)) = session.take_saved_input() {
+                    app.input_buffer = buffer;
+                    app.cursor_position = cursor;
+                }
+            }
+        }
+        RespondPermission {
+            request_id,
+            option_id,
+        } => {
+            if let Some(session) = app.sessions.selected_session_mut() {
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::PermissionResponse {
+                            request_id,
+                            option_id,
+                        })
+                        .await;
+                }
+                session.pending_permission = Option::None;
+                session.state = SessionState::Prompting;
+            }
+        }
+
+        // === Prompt control ===
+        CancelPrompt => {
+            if let Some(session) = app.sessions.selected_session_mut() {
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx.send(AgentCommand::CancelPrompt).await;
+                }
+                session.state = SessionState::Idle;
+                session.add_output("Cancelled".to_string(), OutputType::SystemMessage);
+            }
+        }
+
+        // === Questions ===
+        SubmitAnswer => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(question) = &session.pending_question
+            {
+                let answer = question.get_answer();
+                let request_id = question.request_id;
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::AskUserResponse { request_id, answer })
+                        .await;
+                }
+                session.pending_question = Option::None;
+                session.state = SessionState::Prompting;
+                // Restore saved input if any
+                if let Some((buffer, cursor)) = session.take_saved_input() {
+                    app.input_buffer = buffer;
+                    app.cursor_position = cursor;
+                }
+            }
+        }
+        CancelQuestion => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(question) = &session.pending_question
+            {
+                let request_id = question.request_id;
+                let session_id = session.id.clone();
+                if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::AskUserResponse {
+                            request_id,
+                            answer: "".to_string(),
+                        })
+                        .await;
+                }
+                session.pending_question = Option::None;
+                session.state = SessionState::Idle;
+                // Restore saved input if any
+                if let Some((buffer, cursor)) = session.take_saved_input() {
+                    app.input_buffer = buffer;
+                    app.cursor_position = cursor;
+                }
+            }
+        }
+        QuestionInputChar(c) => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_char(c);
+            }
+        }
+        QuestionInputBackspace => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_backspace();
+            }
+        }
+        QuestionInputDelete => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_delete();
+            }
+        }
+        QuestionInputLeft => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_left();
+            }
+        }
+        QuestionInputRight => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_right();
+            }
+        }
+        QuestionInputHome => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_home();
+            }
+        }
+        QuestionInputEnd => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.input_end();
+            }
+        }
+        QuestionUp => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.select_prev();
+            }
+        }
+        QuestionDown => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx)
+                && let Some(question) = &mut session.pending_question
+            {
+                question.select_next();
+            }
+        }
+
+        // === Permission mode ===
+        CyclePermissionMode => {
+            let session_idx = app.sessions.selected_index();
+            if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
+                session.cycle_permission_mode();
+            }
+        }
+
+        // === Model selection ===
+        CycleModel => {
+            if let Some(session) = app.sessions.selected_session_mut()
+                && let Some(model_id) = session.cycle_model()
+            {
+                let local_id = session.id.clone();
+                let acp_session_id = session.acp_session_id.clone().unwrap_or_default();
+                if let Some(cmd_tx) = agent_commands.get(&local_id) {
+                    let _ = cmd_tx
+                        .send(AgentCommand::SetModel {
+                            session_id: acp_session_id,
+                            model_id,
+                        })
+                        .await;
+                }
+            }
+        }
+        SetModel {
+            session_id,
+            model_id,
+        } => {
+            if let Some(cmd_tx) = agent_commands.get(&session_id) {
+                let _ = cmd_tx
+                    .send(AgentCommand::SetModel {
+                        session_id: session_id.clone(),
+                        model_id,
+                    })
+                    .await;
+            }
+        }
+
+        // === Attachments ===
+        PasteClipboard => {
+            return Some(AsyncAction::PasteClipboard);
+        }
+        ClearAttachments => {
+            app.clear_attachments();
+        }
+        SelectAttachments => {
+            app.select_attachments();
+        }
+        DeselectAttachments => {
+            app.deselect_attachments();
+        }
+        AttachmentLeft => {
+            app.attachment_left();
+        }
+        AttachmentRight => {
+            app.attachment_right();
+        }
+        DeleteSelectedAttachment => {
+            app.delete_selected_attachment();
+        }
+
+        // === Sort mode ===
+        CycleSortMode => {
+            app.cycle_sort_mode();
+        }
+
+        // === Debug ===
+        ToggleDebugToolJson => {
+            app.toggle_debug_tool_json();
+        }
+
+        // === Folder/Agent/Session pickers - handled in old code ===
+        // These will need more complex refactoring later
+        OpenFolderPicker(_)
+        | CloseFolderPicker
+        | FolderPickerDown
+        | FolderPickerUp
+        | FolderPickerEnterDir
+        | FolderPickerGoUp
+        | FolderPickerSelect
+        | OpenWorktreePicker
+        | CloseWorktreePicker
+        | WorktreePickerDown
+        | WorktreePickerUp
+        | WorktreePickerSelect
+        | WorktreePickerCleanup
+        | OpenAgentPicker { .. }
+        | CloseAgentPicker
+        | AgentPickerDown
+        | AgentPickerUp
+        | AgentPickerSelect
+        | AgentPickerInputChar(_)
+        | AgentPickerInputBackspace
+        | AgentPickerInputDelete
+        | AgentPickerInputLeft
+        | AgentPickerInputRight
+        | AgentPickerInputHome
+        | AgentPickerInputEnd
+        | CloseSessionPicker
+        | SessionPickerDown
+        | SessionPickerUp
+        | SessionPickerSelect
+        | CloseBranchInput
+        | SubmitBranchInput
+        | BranchInputAcceptAutocomplete
+        | BranchInputDown
+        | BranchInputUp
+        | BranchInputChar(_)
+        | BranchInputBackspace
+        | BranchInputLeft
+        | BranchInputRight
+        | CloseWorktreeCleanup
+        | WorktreeCleanupDown
+        | WorktreeCleanupUp
+        | WorktreeCleanupToggle
+        | WorktreeCleanupSelectAll
+        | WorktreeCleanupDeselectAll
+        | WorktreeCleanupToggleBranches
+        | WorktreeCleanupExecute
+        | SpawnAgent { .. }
+        | DuplicateSession
+        | ClearSession
+        | OpenClearConfirm
+        | CloseClearConfirm
+        | KillSession
+        | OpenBugReport
+        | CloseBugReport
+        | SubmitBugReport
+        | BugReportInputChar(_)
+        | BugReportInputBackspace
+        | BugReportInputDelete
+        | BugReportInputLeft
+        | BugReportInputRight
+        | BugReportInputHome
+        | BugReportInputEnd => {
+            // These are still handled by the old code for now
+            // Will refactor in a follow-up
+        }
+
+        Action::None => {}
+    }
+
+    Option::None
+}
+
+/// Async actions that need special handling outside the main action processor.
+enum AsyncAction {
+    SubmitPrompt,
+    PasteClipboard,
 }
 
 async fn send_prompt(

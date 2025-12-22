@@ -191,7 +191,7 @@ fn handle_question_mode(app: &App, key: KeyEvent) -> Action {
     }
 }
 
-fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
+pub fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
     // Check for pending permission or question (can still interact in insert mode)
     let has_permission = app
         .sessions

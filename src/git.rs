@@ -412,9 +412,19 @@ pub async fn get_diff_stats(repo_path: &Path, current_branch: &str) -> Result<Di
     // Get the default branch
     let base_branch = get_default_branch(repo_path).await?;
 
-    // If we're on the base branch, compare to HEAD
+    // If we're on the base branch, show uncommitted changes (working directory + staged)
     if current_branch == base_branch {
-        return Ok(DiffStats::default());
+        let output = tokio::process::Command::new("git")
+            .args(["diff", "--shortstat", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return parse_diff_stats(&String::from_utf8_lossy(&output.stdout));
+        } else {
+            return Ok(DiffStats::default());
+        }
     }
 
     // Run: git diff --shortstat origin/<base_branch>...<current_branch>

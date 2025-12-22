@@ -11,7 +11,7 @@
 
 mod action;
 mod handler;
-mod keyboard;
+pub mod keyboard;
 mod mouse;
 
 // Re-export public types

@@ -297,15 +297,7 @@ fn render_session_entry<'a>(
     start_dir: &std::path::Path,
     show_number: bool,
 ) -> Vec<Line<'a>> {
-    use crate::session::AgentType;
-
     let cursor = if is_selected { "> " } else { "  " };
-
-    // Agent type color for second line
-    let agent_color = match session.agent_type {
-        AgentType::ClaudeCode => LOGO_CORAL,
-        AgentType::GeminiCli => LOGO_LIGHT_BLUE,
-    };
 
     // Activity indicator for working sessions
     let (activity, activity_color) = if session.pending_permission.is_some() {
@@ -360,12 +352,9 @@ fn render_session_entry<'a>(
         ])
     };
 
-    // Second line: agent name + branch + worktree + diff stats + mode
-    let agent_name = session.agent_type.display_name();
+    // Second line: branch + worktree + diff stats + mode
     let mut second_spans = vec![
         Span::raw("   "),
-        Span::styled(agent_name.to_string(), Style::new().fg(agent_color)),
-        Span::raw("  "),
         Span::styled("🌿 ", Style::new().fg(BRANCH_GREEN)),
         Span::styled(session.git_branch.clone(), Style::new().fg(TEXT_DIM)),
     ];
@@ -718,14 +707,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
             let mut last_line_type: Option<&OutputType> = None;
 
             for output_line in session.output.iter() {
-                // Add a blank line between user input and any agent response for readability
-                if matches!(last_line_type, Some(OutputType::UserInput))
-                    && !matches!(&output_line.line_type, OutputType::UserInput)
-                {
-                    all_lines.push(Line::raw(""));
-                }
-
-                let lines_for_output: Vec<Line> = match &output_line.line_type {
+                let mut lines_for_output: Vec<Line> = match &output_line.line_type {
                     OutputType::Text => {
                         // Empty lines for spacing
                         if output_line.content.is_empty() {
@@ -958,6 +940,64 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             .collect()
                     }
                 };
+
+                // Trim leading empty lines from this message
+                while let Some(line) = lines_for_output.first() {
+                    if line.spans.is_empty()
+                        || line.spans.iter().all(|s| s.content.trim().is_empty())
+                    {
+                        lines_for_output.remove(0);
+                    } else {
+                        break;
+                    }
+                }
+
+                // Trim trailing empty lines from this message
+                while let Some(line) = lines_for_output.last() {
+                    if line.spans.is_empty()
+                        || line.spans.iter().all(|s| s.content.trim().is_empty())
+                    {
+                        lines_for_output.pop();
+                    } else {
+                        break;
+                    }
+                }
+
+                // Add spacing when transitioning between different message types
+                // This keeps diff lines together, tool output together, etc.
+                let should_add_spacing = match (&last_line_type, &output_line.line_type) {
+                    // Add spacing after user input
+                    (Some(OutputType::UserInput), _) => true,
+                    // Add spacing after thinking blocks
+                    (Some(OutputType::Thought { finalized: true }), _) => true,
+                    // Add spacing after tool calls (before next content)
+                    (
+                        Some(OutputType::ToolCall { .. }),
+                        OutputType::Text | OutputType::UserInput | OutputType::ToolCall { .. },
+                    ) => true,
+                    // Add spacing after text (agent response) before new user input or tool calls
+                    (
+                        Some(OutputType::Text),
+                        OutputType::UserInput | OutputType::ToolCall { .. },
+                    ) => true,
+                    // Add spacing after tool output before new messages
+                    (
+                        Some(OutputType::ToolOutput),
+                        OutputType::Text | OutputType::UserInput | OutputType::ToolCall { .. },
+                    ) => true,
+                    // Add spacing after bash output
+                    (
+                        Some(OutputType::BashOutput),
+                        OutputType::Text | OutputType::UserInput | OutputType::ToolCall { .. },
+                    ) => true,
+                    // Don't add spacing between consecutive diff lines or within tool sequences
+                    _ => false,
+                };
+
+                if should_add_spacing && !all_lines.is_empty() {
+                    all_lines.push(Line::raw(""));
+                }
+
                 all_lines.extend(lines_for_output);
                 last_line_type = Some(&output_line.line_type);
             }

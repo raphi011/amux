@@ -744,6 +744,8 @@ pub struct App {
     pub running_bash_command: Option<RunningBashCommand>,
     /// Desktop notification manager
     pub notifications: NotificationManager,
+    /// Last time git diff stats were refreshed
+    pub last_git_refresh: std::time::Instant,
 }
 
 impl App {
@@ -783,6 +785,7 @@ impl App {
             bash_mode: false,
             running_bash_command: None,
             notifications: NotificationManager::new(notification_config),
+            last_git_refresh: std::time::Instant::now(),
         }
     }
 
@@ -878,6 +881,16 @@ impl App {
     /// Get current spinner character
     pub fn spinner(&self) -> &'static str {
         SPINNER_FRAMES[self.spinner_frame]
+    }
+
+    /// Check if git diff stats should be refreshed (every 5 seconds)
+    pub fn should_refresh_git_stats(&self) -> bool {
+        self.last_git_refresh.elapsed() >= std::time::Duration::from_secs(5)
+    }
+
+    /// Mark that git stats were just refreshed
+    pub fn mark_git_refreshed(&mut self) {
+        self.last_git_refresh = std::time::Instant::now();
     }
 
     /// Open the folder picker starting at the given directory
