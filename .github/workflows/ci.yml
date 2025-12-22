@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  nix:
+    name: Nix Build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Build with Nix
+        run: nix build --print-build-logs
+
+      - name: Run Nix checks
+        run: nix flake check --print-build-logs
+
+      - name: Verify binary
+        run: |
+          ./result/bin/amux --version
+          ./result/bin/amux --help
+
+  homebrew:
+    name: Homebrew Formula
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Create tarball
+        run: |
+          cd target/release
+          tar czvf amux-darwin-arm64.tar.gz amux
+
+      - name: Audit formula
+        run: brew audit --strict Formula/amux.rb
+
+      - name: Test formula installation (from local build)
+        run: |
+          # Create a local tap with our formula
+          mkdir -p $(brew --repository)/Library/Taps/local/homebrew-amux/Formula
+          
+          # Modify formula to use local tarball
+          sed 's|https://github.com/raphi011/amux/releases/download/v#{version}/amux-darwin-arm64.tar.gz|file://'$PWD'/target/release/amux-darwin-arm64.tar.gz|' Formula/amux.rb > $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
+          
+          # Update sha256 for local build
+          LOCAL_SHA=$(shasum -a 256 target/release/amux-darwin-arm64.tar.gz | cut -d' ' -f1)
+          sed -i '' "s/sha256 \".*\" # darwin-arm64/sha256 \"${LOCAL_SHA}\" # darwin-arm64/" $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/amux.rb
+          
+          # Install from local tap
+          brew install local/amux/amux
+          
+          # Verify installation
+          test -x $(brew --prefix)/bin/amux
+          file $(brew --prefix)/bin/amux
