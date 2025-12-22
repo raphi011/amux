@@ -149,6 +149,7 @@ These features require ACP spec/agent support that doesn't exist yet:
 - **Session resume** - Resume previous sessions. Requires `session/load` ACP support which is not yet implemented.
 - **Prompt cancellation** - Esc to cancel running prompts. Cancellation is still a draft feature in the ACP spec (see protocol/draft/cancellation) and agents don't honor `$/cancel_request`. Workaround: use `c` to clear/restart the session.
 - **Clarifying questions** - Agent asks follow-up questions during planning or complex tasks. UI support exists (`session/ask_user`) but this is a Claude Code extension not yet implemented by agents.
+- **Extended thinking** - Display agent reasoning/thinking. The ACP spec only defines `agent_message_chunk` for streamed text; there is no `agent_thought_chunk` update type. Code has support ready if ACP adds this.
 
 ## Building
 
