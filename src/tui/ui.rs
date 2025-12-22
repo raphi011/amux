@@ -293,14 +293,14 @@ fn render_session_entry<'a>(
     };
 
     // Activity indicator for working sessions
-    let activity = if session.pending_permission.is_some() {
-        " ⚠".to_string() // Permission required
+    let (activity, activity_color) = if session.pending_permission.is_some() {
+        (" ⚠".to_string(), LOGO_GOLD) // Permission required - orange/gold
     } else if session.pending_question.is_some() {
-        " ?".to_string() // Question pending
+        (" ?".to_string(), LOGO_GOLD) // Question pending - orange/gold
     } else if session.state.is_active() {
-        format!(" {}", spinner) // Animated spinner
+        (format!(" {}", spinner), LOGO_MINT) // Animated spinner - green
     } else {
-        String::new()
+        (String::new(), LOGO_MINT)
     };
 
     // Compute relative path from start_dir, or use session name as fallback
@@ -328,7 +328,7 @@ fn render_session_entry<'a>(
                     Style::new().fg(TEXT_WHITE)
                 },
             ),
-            Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
+            Span::styled(activity.clone(), Style::new().fg(activity_color)),
         ])
     } else {
         Line::from(vec![
@@ -341,7 +341,7 @@ fn render_session_entry<'a>(
                     Style::new().fg(TEXT_WHITE)
                 },
             ),
-            Span::styled(activity.clone(), Style::new().fg(LOGO_MINT)),
+            Span::styled(activity.clone(), Style::new().fg(activity_color)),
         ])
     };
 
