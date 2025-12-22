@@ -50,7 +50,11 @@ jobs:
           tar czvf amux-darwin-arm64.tar.gz amux
 
       - name: Audit formula
-        run: brew audit --strict Formula/amux.rb
+        run: |
+          # Copy formula to tap location so we can audit by name
+          mkdir -p $(brew --repository)/Library/Taps/local/homebrew-amux/Formula
+          cp Formula/amux.rb $(brew --repository)/Library/Taps/local/homebrew-amux/Formula/
+          brew audit --strict local/amux/amux
 
       - name: Test formula installation (from local build)
         run: |

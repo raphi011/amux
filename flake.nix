@@ -31,14 +31,8 @@
           pname = "amux";
           version = "0.3.0";
 
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.libiconv
-            pkgs.darwin.apple_sdk.frameworks.AppKit
-          ];
-
-          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-          ];
+          # Darwin SDK with frameworks is provided automatically by stdenv
+          # libiconv, libresolv, libsbuf are propagated automatically
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
