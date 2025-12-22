@@ -75,9 +75,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .map(|s| s.pending_question.is_some())
         .unwrap_or(false);
 
-    // Title bar is always 2 lines: 1 for content + 1 for padding
-    let title_bar_height = 2;
-
     // Render vertical separator
     render_separator(frame, content_layout[2]);
 
@@ -118,67 +115,61 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         6
     };
 
-    // Right side: title bar + output + separator + permission/question/input
+    // Right side: output + separator + permission/question/input
     let right_layout = if has_permission {
         Layout::vertical([
-            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
-            Constraint::Min(0),                   // Output
-            Constraint::Length(6),                // Permission dialog
+            Constraint::Min(0),    // Output
+            Constraint::Length(6), // Permission dialog
         ])
         .split(content_layout[4])
     } else if has_question {
         Layout::vertical([
-            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
-            Constraint::Min(0),                   // Output
-            Constraint::Length(question_height),  // Question dialog
+            Constraint::Min(0),                  // Output
+            Constraint::Length(question_height), // Question dialog
         ])
         .split(content_layout[4])
     } else {
         Layout::vertical([
-            Constraint::Length(title_bar_height), // Title bar (dynamic based on thinking)
-            Constraint::Min(0),                   // Output
-            Constraint::Length(1),                // Empty line above separator
-            Constraint::Length(1),                // Horizontal separator
-            Constraint::Length(1),                // Empty line below separator
+            Constraint::Min(0),                      // Output
+            Constraint::Length(1),                   // Empty line above separator
+            Constraint::Length(1),                   // Horizontal separator
+            Constraint::Length(1),                   // Empty line below separator
             Constraint::Length(input_height.max(2)), // Input bar (min 2 lines: input + mode)
         ])
         .split(content_layout[4])
     };
-
-    // Render title bar
-    render_title_bar(frame, right_layout[0], app);
 
     // Render folder picker, agent picker, session picker, branch input, worktree picker, or output area
     if app.input_mode == InputMode::FolderPicker
         || app.input_mode == InputMode::WorktreeFolderPicker
         || app.input_mode == InputMode::WorktreeCleanupRepoPicker
     {
-        render_folder_picker(frame, right_layout[1], app);
+        render_folder_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::WorktreePicker {
-        render_worktree_picker(frame, right_layout[1], app);
+        render_worktree_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::BranchInput {
-        render_branch_input(frame, right_layout[1], app);
+        render_branch_input(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::AgentPicker {
-        render_agent_picker(frame, right_layout[1], app);
+        render_agent_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::SessionPicker {
-        render_session_picker(frame, right_layout[1], app);
+        render_session_picker(frame, right_layout[0], app);
     } else if app.input_mode == InputMode::WorktreeCleanup {
-        render_worktree_cleanup(frame, right_layout[1], app);
+        render_worktree_cleanup(frame, right_layout[0], app);
     } else {
         // Update viewport_height for scroll calculations
-        app.viewport_height = right_layout[1].height as usize;
-        render_output_area(frame, right_layout[1], app);
+        app.viewport_height = right_layout[0].height as usize;
+        render_output_area(frame, right_layout[0], app);
     }
 
     // Render permission dialog, question dialog, or input bar
     if has_permission {
-        render_permission_dialog(frame, right_layout[2], app);
+        render_permission_dialog(frame, right_layout[1], app);
     } else if has_question {
-        render_question_dialog(frame, right_layout[2], app);
+        render_question_dialog(frame, right_layout[1], app);
     } else {
-        // Render horizontal separator (index 2 is empty, 3 is separator, 4 is empty, 5 is input)
-        render_horizontal_separator(frame, right_layout[3]);
-        render_input_bar(frame, right_layout[5], app);
+        // Render horizontal separator (index 1 is empty, 2 is separator, 3 is empty, 4 is input)
+        render_horizontal_separator(frame, right_layout[2]);
+        render_input_bar(frame, right_layout[4], app);
     }
 
     // Render help popup on top if in Help mode
@@ -212,65 +203,6 @@ fn render_horizontal_separator(frame: &mut Frame, area: Rect) {
     let line = Line::styled(separator, Style::new().fg(TEXT_DIM));
     let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
-}
-
-fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
-    if let Some(session) = app.selected_session() {
-        // Priority: 1. thinking, 2. todos (in-progress plan entry), 3. last prompt
-        let (prefix, content, style) = if let Some(ref thought) = session.current_thought
-            && !thought.is_empty()
-        {
-            // Priority 1: Thinking - just show lightbulb and "Thinking..."
-            (
-                "",
-                "💡 Thinking...".to_string(),
-                Style::new().fg(LOGO_GOLD).italic(),
-            )
-        } else if let Some(activity) = session.current_activity() {
-            // Priority 2 & 3: in-progress TODO or last prompt (current_activity handles this)
-            let prefix = if session
-                .plan_entries
-                .iter()
-                .any(|e| e.status == crate::acp::PlanStatus::InProgress)
-            {
-                "TODO: "
-            } else {
-                "Last Prompt: "
-            };
-            (prefix, activity, Style::new().fg(LOGO_GOLD).bold())
-        } else {
-            // Fallback: session name
-            ("", session.name.clone(), Style::new().fg(LOGO_GOLD).bold())
-        };
-
-        // Truncate content to fit in available width
-        let prefix_len = prefix.len();
-        let max_width = area.width.saturating_sub(4) as usize; // Leave margin for centering
-        let max_content_width = max_width.saturating_sub(prefix_len);
-        let display = if content.len() > max_content_width {
-            // Find valid char boundary for truncation
-            let mut end = max_content_width.saturating_sub(1);
-            while end > 0 && !content.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}…", &content[..end])
-        } else {
-            content
-        };
-
-        // Calculate padding for centering
-        let text_len = prefix_len + display.len();
-        let padding = (area.width as usize).saturating_sub(text_len) / 2;
-
-        let line = Line::from(vec![
-            Span::raw(" ".repeat(padding)),
-            Span::styled(prefix, Style::new().fg(TEXT_DIM)),
-            Span::styled(display, style),
-        ]);
-
-        let paragraph = Paragraph::new(line);
-        frame.render_widget(paragraph, area);
-    }
 }
 
 fn render_logo(frame: &mut Frame, area: Rect) {
@@ -736,7 +668,7 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                             .collect()
                     }
 
-                    OutputType::Thought { .. } => {
+                    OutputType::Thought => {
                         // Agent thinking - just show lightbulb and "Thinking..."
                         vec![Line::from(vec![
                             Span::styled("💡 ", Style::new().fg(LOGO_GOLD)),
@@ -968,8 +900,8 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                 let should_add_spacing = match (&last_line_type, &output_line.line_type) {
                     // Add spacing after user input
                     (Some(OutputType::UserInput), _) => true,
-                    // Add spacing after thinking blocks
-                    (Some(OutputType::Thought { finalized: true }), _) => true,
+                    // Note: Thinking is now ephemeral and removed when new content arrives,
+                    // so we don't need spacing rules for it anymore
                     // Add spacing after tool calls (before next content)
                     (
                         Some(OutputType::ToolCall { .. }),

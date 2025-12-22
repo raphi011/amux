@@ -1,4 +1,4 @@
-use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry, PlanStatus};
+use crate::acp::{AskUserOption, PermissionKind, PermissionOptionInfo, PlanEntry};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
@@ -360,9 +360,7 @@ pub struct OutputLine {
 pub enum OutputType {
     Text,      // Agent response text
     UserInput, // User's prompt
-    Thought {
-        finalized: bool, // Whether this thought line is finalized (no more updates)
-    },
+    Thought,   // Agent thinking (ephemeral, removed when new content arrives)
     ToolCall {
         tool_call_id: String,
         name: String,
@@ -501,29 +499,6 @@ impl Session {
         })
     }
 
-    /// Get a description of what the agent is currently working on.
-    /// Returns the in-progress plan entry if available, otherwise falls back
-    /// to the last user prompt.
-    pub fn current_activity(&self) -> Option<String> {
-        // First priority: in-progress plan entry
-        if let Some(entry) = self
-            .plan_entries
-            .iter()
-            .find(|e| e.status == PlanStatus::InProgress)
-        {
-            return Some(entry.content.clone());
-        }
-
-        // Second priority: last user prompt
-        for line in self.output.iter().rev() {
-            if matches!(line.line_type, OutputType::UserInput) {
-                return Some(line.content.clone());
-            }
-        }
-
-        None
-    }
-
     /// Scroll up by n lines. If at bottom (usize::MAX), first normalize to actual position.
     pub fn scroll_up(&mut self, n: usize, total_lines: usize, viewport_height: usize) {
         // Normalize usize::MAX to actual bottom position
@@ -580,9 +555,9 @@ impl Session {
         // Update the ephemeral current_thought for title bar
         self.current_thought = Some(text.clone());
 
-        // Check if the last output line is an unfinalized Thought - if so, replace it
+        // Check if the last output line is a Thought - if so, replace it
         if let Some(last) = self.output.last_mut()
-            && matches!(last.line_type, OutputType::Thought { finalized: false })
+            && matches!(last.line_type, OutputType::Thought)
         {
             last.content = text;
             self.last_activity = Some(Instant::now());
@@ -592,28 +567,35 @@ impl Session {
         // Create a new thought line
         self.output.push(OutputLine {
             content: text,
-            line_type: OutputType::Thought { finalized: false },
+            line_type: OutputType::Thought,
         });
         self.last_activity = Some(Instant::now());
     }
 
-    /// Finalize the current thought line (called when non-thought content arrives)
-    /// Next thought chunk will create a new line
+    /// Remove the current thought line (called when non-thought content arrives)
+    /// Thinking is ephemeral and should only be shown while actively thinking
     pub fn finalize_thought(&mut self) {
-        // Clear the ephemeral thought for title bar
+        // Clear the ephemeral thought
         self.current_thought = None;
 
-        // Mark the last thought line as finalized
-        if let Some(last) = self.output.last_mut()
-            && let OutputType::Thought { finalized } = &mut last.line_type
+        // Remove the last thought line from output if it exists
+        if let Some(last) = self.output.last()
+            && matches!(last.line_type, OutputType::Thought)
         {
-            *finalized = true;
+            self.output.pop();
         }
     }
 
     /// Clear the current thought (called when response/tool output arrives)
     pub fn clear_thought(&mut self) {
         self.current_thought = None;
+        
+        // Remove the last thought line from output if it exists
+        if let Some(last) = self.output.last()
+            && matches!(last.line_type, OutputType::Thought)
+        {
+            self.output.pop();
+        }
     }
 
     /// Check if a tool call with this ID already exists
