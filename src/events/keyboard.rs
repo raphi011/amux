@@ -375,6 +375,16 @@ fn handle_agent_picker_mode(key: KeyEvent) -> Action {
         KeyCode::Char('j') | KeyCode::Down => Action::AgentPickerDown,
         KeyCode::Char('k') | KeyCode::Up => Action::AgentPickerUp,
         KeyCode::Enter => Action::AgentPickerSelect,
+
+        // Filter input
+        KeyCode::Char(c) => Action::AgentPickerInputChar(c),
+        KeyCode::Backspace => Action::AgentPickerInputBackspace,
+        KeyCode::Delete => Action::AgentPickerInputDelete,
+        KeyCode::Left => Action::AgentPickerInputLeft,
+        KeyCode::Right => Action::AgentPickerInputRight,
+        KeyCode::Home => Action::AgentPickerInputHome,
+        KeyCode::End => Action::AgentPickerInputEnd,
+
         _ => Action::None,
     }
 }

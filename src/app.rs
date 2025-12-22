@@ -171,18 +171,111 @@ pub struct AgentPickerState {
     pub is_worktree: bool,
     /// Availability info for each agent
     pub agents: Vec<AgentAvailability>,
+    /// Filtered agents based on query
+    pub filtered: Vec<AgentAvailability>,
+    /// Filter query string
+    pub query: String,
+    /// Cursor position in the query input
+    pub query_cursor: usize,
 }
 
 impl AgentPickerState {
     pub fn new(cwd: PathBuf, is_worktree: bool, agents: Vec<AgentAvailability>) -> Self {
         // Start with first available agent selected, or 0 if none available
         let selected = agents.iter().position(|a| a.is_available()).unwrap_or(0);
+        let filtered = agents.clone();
         Self {
             cwd,
             selected,
             is_worktree,
+            filtered,
             agents,
+            query: String::new(),
+            query_cursor: 0,
         }
+    }
+
+    /// Update the filtered list based on the current query
+    pub fn update_filter(&mut self) {
+        let query_lower = self.query.to_lowercase();
+        self.filtered = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.agent_type
+                    .display_name()
+                    .to_lowercase()
+                    .contains(&query_lower)
+            })
+            .cloned()
+            .collect();
+
+        // Adjust selected index to stay within bounds
+        if self.filtered.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.filtered.len() - 1);
+        }
+    }
+
+    /// Add a character to the query
+    pub fn query_input_char(&mut self, c: char) {
+        self.query.insert(self.query_cursor, c);
+        self.query_cursor += c.len_utf8();
+        self.update_filter();
+    }
+
+    /// Delete character before cursor in query
+    pub fn query_backspace(&mut self) {
+        if self.query_cursor > 0 {
+            let mut new_pos = self.query_cursor - 1;
+            while new_pos > 0 && !self.query.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.query.remove(new_pos);
+            self.query_cursor = new_pos;
+            self.update_filter();
+        }
+    }
+
+    /// Delete character at cursor in query
+    pub fn query_delete(&mut self) {
+        if self.query_cursor < self.query.len() {
+            self.query.remove(self.query_cursor);
+            self.update_filter();
+        }
+    }
+
+    /// Move query cursor left
+    pub fn query_left(&mut self) {
+        if self.query_cursor > 0 {
+            let mut new_pos = self.query_cursor - 1;
+            while new_pos > 0 && !self.query.is_char_boundary(new_pos) {
+                new_pos -= 1;
+            }
+            self.query_cursor = new_pos;
+        }
+    }
+
+    /// Move query cursor right
+    pub fn query_right(&mut self) {
+        if self.query_cursor < self.query.len() {
+            let mut new_pos = self.query_cursor + 1;
+            while new_pos < self.query.len() && !self.query.is_char_boundary(new_pos) {
+                new_pos += 1;
+            }
+            self.query_cursor = new_pos;
+        }
+    }
+
+    /// Move cursor to start of query
+    pub fn query_home(&mut self) {
+        self.query_cursor = 0;
+    }
+
+    /// Move cursor to end of query
+    pub fn query_end(&mut self) {
+        self.query_cursor = self.query.len();
     }
 
     pub fn selected_agent(&self) -> Option<AgentType> {
@@ -239,7 +332,7 @@ impl Picker for AgentPickerState {
     type Item = AgentAvailability;
 
     fn items(&self) -> &[Self::Item] {
-        &self.agents
+        &self.filtered
     }
 
     fn selected_index(&self) -> usize {

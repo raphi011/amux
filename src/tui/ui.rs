@@ -220,10 +220,10 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
         let (prefix, content, style) = if let Some(ref thought) = session.current_thought
             && !thought.is_empty()
         {
-            // Priority 1: Thinking
+            // Priority 1: Thinking - just show lightbulb and "Thinking..."
             (
-                "Thinking: ",
-                thought.clone(),
+                "",
+                "💡 Thinking...".to_string(),
                 Style::new().fg(LOGO_GOLD).italic(),
             )
         } else if let Some(activity) = session.current_activity() {
@@ -696,10 +696,9 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
             let mut last_line_type: Option<&OutputType> = None;
 
             for output_line in session.output.iter() {
-                // Add a blank line between user input and agent response for readability
-                if let (Some(OutputType::UserInput), OutputType::Text) =
-                    (last_line_type, &output_line.line_type)
-                    && !output_line.content.is_empty()
+                // Add a blank line between user input and any agent response for readability
+                if matches!(last_line_type, Some(OutputType::UserInput))
+                    && !matches!(&output_line.line_type, OutputType::UserInput)
                 {
                     all_lines.push(Line::raw(""));
                 }
@@ -734,30 +733,11 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
 
                     OutputType::Thought { .. } => {
-                        // Agent thinking - gold italic with lightbulb prefix, rendered as markdown
-                        // Use "● " prefix to match tool call alignment (bullet + space = 2 chars)
-                        let prefix = "● ";
-                        let skin = ratskin::RatSkin::default();
-                        let parsed_lines = skin.parse(
-                            ratskin::RatSkin::parse_text(&output_line.content),
-                            inner_width.saturating_sub(2) as u16,
-                        );
-                        // Start with empty line for padding before thought block
-                        let mut lines: Vec<Line> = vec![Line::from("")];
-                        lines.extend(parsed_lines.into_iter().enumerate().map(|(i, mut line)| {
-                            // Add prefix and apply gold italic styling
-                            let line_prefix = if i == 0 { prefix } else { "  " };
-                            // Prepend the prefix with gold color for the bullet
-                            line.spans
-                                .insert(0, Span::styled(line_prefix, Style::new().fg(LOGO_GOLD)));
-                            // Apply gold italic to all content spans
-                            for span in &mut line.spans[1..] {
-                                span.style =
-                                    span.style.fg(LOGO_GOLD).add_modifier(Modifier::ITALIC);
-                            }
-                            line
-                        }));
-                        lines
+                        // Agent thinking - just show lightbulb and "Thinking..."
+                        vec![Line::from(vec![
+                            Span::styled("💡 ", Style::new().fg(LOGO_GOLD)),
+                            Span::styled("Thinking...", Style::new().fg(LOGO_GOLD).italic()),
+                        ])]
                     }
                     OutputType::ToolCall {
                         tool_call_id,
@@ -1811,8 +1791,23 @@ pub fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::raw("")); // spacing
 
-        // List agent options with availability status
-        for (i, availability) in picker.agents.iter().enumerate() {
+        // Filter input line
+        let filter_label = "Filter: ";
+        lines.push(Line::from(vec![
+            Span::styled(filter_label, Style::new().fg(TEXT_DIM)),
+            Span::styled(&picker.query, Style::new().fg(TEXT_WHITE)),
+        ]));
+        lines.push(Line::raw("")); // spacing
+
+        // List agent options with availability status (using filtered list)
+        if picker.filtered.is_empty() {
+            lines.push(Line::styled(
+                "  (no matching agents)",
+                Style::new().fg(TEXT_DIM),
+            ));
+        }
+
+        for (i, availability) in picker.filtered.iter().enumerate() {
             let is_selected = i == picker.selected;
             let is_available = availability.is_available();
             let cursor = if is_selected { "> " } else { "  " };
@@ -1863,7 +1858,7 @@ pub fn render_agent_picker(frame: &mut Frame, area: Rect, app: &App) {
             }
 
             // Add spacing between agents
-            if i < picker.agents.len() - 1 {
+            if i < picker.filtered.len() - 1 {
                 lines.push(Line::raw(""));
             }
         }

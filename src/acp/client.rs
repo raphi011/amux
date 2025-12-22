@@ -334,6 +334,8 @@ impl AgentConnection {
                                                         as usize;
                                                     let limit = fs_params.limit.unwrap_or(u32::MAX)
                                                         as usize;
+                                                    // Clamp start to file length to prevent panic
+                                                    let start = start.min(lines.len());
                                                     let end = (start + limit).min(lines.len());
                                                     content = lines[start..end].join("\n");
                                                 }

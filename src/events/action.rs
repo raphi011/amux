@@ -206,6 +206,20 @@ pub enum Action {
     AgentPickerDown,
     /// Select agent
     AgentPickerSelect,
+    /// Input character into agent picker filter
+    AgentPickerInputChar(char),
+    /// Delete character in agent picker filter
+    AgentPickerInputBackspace,
+    /// Delete at cursor in agent picker filter
+    AgentPickerInputDelete,
+    /// Move cursor left in agent picker filter
+    AgentPickerInputLeft,
+    /// Move cursor right in agent picker filter
+    AgentPickerInputRight,
+    /// Move cursor to start in agent picker filter
+    AgentPickerInputHome,
+    /// Move cursor to end in agent picker filter
+    AgentPickerInputEnd,
 
     // === Session picker ===
     /// Close session picker

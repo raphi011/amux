@@ -1350,6 +1350,42 @@ where
                                         }
                                         // If not available, do nothing (user can see the ✗ markers)
                                     }
+                                    // Filter input
+                                    KeyCode::Char(c) => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_input_char(c);
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_backspace();
+                                        }
+                                    }
+                                    KeyCode::Delete => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_delete();
+                                        }
+                                    }
+                                    KeyCode::Left => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_left();
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_right();
+                                        }
+                                    }
+                                    KeyCode::Home => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_home();
+                                        }
+                                    }
+                                    KeyCode::End => {
+                                        if let Some(picker) = &mut app.agent_picker {
+                                            picker.query_end();
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }

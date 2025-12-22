@@ -177,3 +177,4 @@ When creating a new release:
 2. Update `version` in `flake.nix` to match the new tag
 3. Commit the version bump
 4. Create and push the git tag (e.g., `git tag v0.4.0 && git push --tags`)
+ 
