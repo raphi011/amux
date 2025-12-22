@@ -93,6 +93,8 @@ pub enum Action {
     InputKillLine,
     /// Delete to start of line
     InputKillToStart,
+    /// Insert newline character (Shift+Enter)
+    InputNewline,
     /// Clear input buffer (Ctrl+C)
     ClearInput,
     /// Submit prompt

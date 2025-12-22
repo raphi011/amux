@@ -202,6 +202,8 @@ fn handle_insert_mode(app: &App, key: KeyEvent) -> Action {
 
         KeyCode::Enter if has_permission => Action::AllowPermission,
         KeyCode::Enter if has_question => Action::SubmitAnswer,
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => Action::InputNewline,
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::InputNewline,
         KeyCode::Enter => Action::SubmitPrompt,
 
         // Clipboard
