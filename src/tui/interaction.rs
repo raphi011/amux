@@ -226,11 +226,8 @@ mod tests {
 
     #[test]
     fn test_region_contains() {
-        let region = InteractiveRegion::clickable(
-            "test",
-            ClickRegion::new(10, 10, 20, 10),
-            Action::None,
-        );
+        let region =
+            InteractiveRegion::clickable("test", ClickRegion::new(10, 10, 20, 10), Action::None);
 
         assert!(region.contains(10, 10)); // top-left corner
         assert!(region.contains(15, 15)); // center
@@ -263,7 +260,10 @@ mod tests {
         );
 
         // Click in popup area should return popup's action
-        assert!(matches!(registry.handle_click(50, 50), Action::ScrollToBottom));
+        assert!(matches!(
+            registry.handle_click(50, 50),
+            Action::ScrollToBottom
+        ));
 
         // Click outside popup should return background's action
         assert!(matches!(registry.handle_click(5, 5), Action::ScrollToTop));

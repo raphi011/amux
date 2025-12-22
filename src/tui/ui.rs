@@ -378,11 +378,7 @@ fn render_session_entry<'a>(
 fn origin_display_name(origin: &str) -> String {
     // origin is already normalized (e.g., "github.com/user/repo")
     // Extract just the repo name (last component)
-    origin
-        .rsplit('/')
-        .next()
-        .unwrap_or(origin)
-        .to_string()
+    origin.rsplit('/').next().unwrap_or(origin).to_string()
 }
 
 pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -507,8 +503,14 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 let line_y = area.y + session_lines.len() as u16;
 
                 // Use display_idx for the number shown to user
-                let entry_lines =
-                    render_session_entry(session, display_idx, is_selected, spinner, &start_dir, true);
+                let entry_lines = render_session_entry(
+                    session,
+                    display_idx,
+                    is_selected,
+                    spinner,
+                    &start_dir,
+                    true,
+                );
 
                 // Register interactive region for session item
                 let bounds = ClickRegion::new(area.x, line_y, area.width, 3);
@@ -631,11 +633,13 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // "[?] help  " is 10 chars
     let help_bounds = ClickRegion::new(area.x, hotkey_line_y, 10, 1);
     app.interactions.register(
-        InteractiveRegion::clickable("sidebar_help", help_bounds, Action::OpenHelp).with_priority(1),
+        InteractiveRegion::clickable("sidebar_help", help_bounds, Action::OpenHelp)
+            .with_priority(1),
     );
 
     // "[v] <sort_mode>" starts at position 10
-    let sort_bounds = ClickRegion::new(area.x + 10, hotkey_line_y, area.width.saturating_sub(10), 1);
+    let sort_bounds =
+        ClickRegion::new(area.x + 10, hotkey_line_y, area.width.saturating_sub(10), 1);
     app.interactions.register(
         InteractiveRegion::clickable("sidebar_sort", sort_bounds, Action::CycleSortMode)
             .with_priority(1),
@@ -673,16 +677,24 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
             let debug_tool_json = app.debug_tool_json;
 
             // First expand all output to visual lines
-            let all_lines: Vec<Line> = session
-                .output
-                .iter()
-                .flat_map(|output_line| {
-                    match &output_line.line_type {
-                        OutputType::Text => {
-                            // Empty lines for spacing
-                            if output_line.content.is_empty() {
-                                return vec![Line::raw("")];
-                            }
+            let mut all_lines: Vec<Line> = vec![];
+            let mut last_line_type: Option<&OutputType> = None;
+
+            for output_line in session.output.iter() {
+                // Add a blank line between user input and agent response for readability
+                if let (Some(OutputType::UserInput), OutputType::Text) =
+                    (last_line_type, &output_line.line_type)
+                    && !output_line.content.is_empty()
+                {
+                    all_lines.push(Line::raw(""));
+                }
+
+                let lines_for_output: Vec<Line> = match &output_line.line_type {
+                    OutputType::Text => {
+                        // Empty lines for spacing
+                        if output_line.content.is_empty() {
+                            vec![Line::raw("")]
+                        } else {
                             // Agent response - render as markdown using ratskin/termimad
                             let skin = ratskin::RatSkin::default();
                             skin.parse(
@@ -690,11 +702,12 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 inner_width as u16,
                             )
                         }
-                        OutputType::Thought => {
-                            // Agent thought/reasoning - golden italic text
-                            if output_line.content.is_empty() {
-                                return vec![Line::raw("")];
-                            }
+                    }
+                    OutputType::Thought => {
+                        // Agent thought/reasoning - golden italic text
+                        if output_line.content.is_empty() {
+                            vec![Line::raw("")]
+                        } else {
                             let wrapped = wrap_text(&output_line.content, inner_width);
                             wrapped
                                 .into_iter()
@@ -706,208 +719,206 @@ pub fn render_output_area(frame: &mut Frame, area: Rect, app: &mut App) {
                                 })
                                 .collect()
                         }
-                        OutputType::UserInput => {
-                            // User prompt - cyan/blue
-                            let wrapped = wrap_text(&output_line.content, inner_width);
-                            wrapped
-                                .into_iter()
-                                .map(|text| {
-                                    Line::from(vec![Span::styled(
-                                        text,
-                                        Style::new().fg(LOGO_LIGHT_BLUE).bold(),
-                                    )])
-                                })
-                                .collect()
-                        }
-                        OutputType::ToolCall {
-                            tool_call_id,
-                            name,
-                            description,
-                            failed,
-                            raw_json,
-                        } => {
-                            // Tool call - spinner if active, red dot if failed, green dot if complete
-                            let is_active = active_tool_id == Some(tool_call_id.as_str());
-                            let (indicator, indicator_color) = if is_active {
-                                (format!("{} ", spinner), TOOL_DOT)
-                            } else if *failed {
-                                ("● ".to_string(), LOGO_CORAL)
-                            } else {
-                                ("● ".to_string(), TOOL_DOT)
-                            };
-                            // Use the name (title) directly, rendered as markdown
-                            let _ = description; // unused for now
-                            let skin = ratskin::RatSkin::default();
-                            let parsed_lines = skin.parse(
-                                ratskin::RatSkin::parse_text(name),
-                                inner_width.saturating_sub(2) as u16,
-                            );
-                            let mut lines: Vec<Line> = parsed_lines
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, mut line)| {
-                                    let prefix = if i == 0 {
-                                        Span::styled(
-                                            indicator.clone(),
-                                            Style::new().fg(indicator_color),
-                                        )
+                    }
+                    OutputType::UserInput => {
+                        // User prompt - cyan/blue
+                        let wrapped = wrap_text(&output_line.content, inner_width);
+                        wrapped
+                            .into_iter()
+                            .map(|text| {
+                                Line::from(vec![Span::styled(
+                                    text,
+                                    Style::new().fg(LOGO_LIGHT_BLUE).bold(),
+                                )])
+                            })
+                            .collect()
+                    }
+                    OutputType::ToolCall {
+                        tool_call_id,
+                        name,
+                        description,
+                        failed,
+                        raw_json,
+                    } => {
+                        // Tool call - spinner if active, red dot if failed, green dot if complete
+                        let is_active = active_tool_id == Some(tool_call_id.as_str());
+                        let (indicator, indicator_color) = if is_active {
+                            (format!("{} ", spinner), TOOL_DOT)
+                        } else if *failed {
+                            ("● ".to_string(), LOGO_CORAL)
+                        } else {
+                            ("● ".to_string(), TOOL_DOT)
+                        };
+                        // Use the name (title) directly, rendered as markdown
+                        let _ = description; // unused for now
+                        let skin = ratskin::RatSkin::default();
+                        let parsed_lines = skin.parse(
+                            ratskin::RatSkin::parse_text(name),
+                            inner_width.saturating_sub(2) as u16,
+                        );
+                        let mut lines: Vec<Line> = parsed_lines
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, mut line)| {
+                                let prefix = if i == 0 {
+                                    Span::styled(
+                                        indicator.clone(),
+                                        Style::new().fg(indicator_color),
+                                    )
+                                } else {
+                                    Span::styled("  ", Style::new().fg(indicator_color))
+                                };
+                                line.spans.insert(0, prefix);
+                                line
+                            })
+                            .collect();
+
+                        // If debug mode is on, render all raw JSON requests below the tool call
+                        if debug_tool_json {
+                            for json in raw_json {
+                                for json_line in json.lines() {
+                                    // Truncate long lines rather than wrap to preserve indentation
+                                    let max_len = inner_width.saturating_sub(4);
+                                    let display_line = if json_line.len() > max_len {
+                                        format!("{}…", &json_line[..max_len.saturating_sub(1)])
                                     } else {
-                                        Span::styled("  ", Style::new().fg(indicator_color))
+                                        json_line.to_string()
                                     };
-                                    line.spans.insert(0, prefix);
-                                    line
-                                })
-                                .collect();
-                            
-                            // If debug mode is on, render all raw JSON requests below the tool call
-                            if debug_tool_json {
-                                for json in raw_json {
-                                    for json_line in json.lines() {
-                                        // Truncate long lines rather than wrap to preserve indentation
-                                        let max_len = inner_width.saturating_sub(4);
-                                        let display_line = if json_line.len() > max_len {
-                                            format!("{}…", &json_line[..max_len.saturating_sub(1)])
-                                        } else {
-                                            json_line.to_string()
-                                        };
-                                        lines.push(Line::from(vec![
-                                            Span::styled("  │ ", Style::new().fg(TEXT_DIM)),
-                                            Span::styled(display_line, Style::new().fg(TEXT_DIM)),
-                                        ]));
-                                    }
+                                    lines.push(Line::from(vec![
+                                        Span::styled("  │ ", Style::new().fg(TEXT_DIM)),
+                                        Span::styled(display_line, Style::new().fg(TEXT_DIM)),
+                                    ]));
                                 }
                             }
-                            
-                            lines
                         }
-                        OutputType::ToolOutput => {
-                            // Tool output - └ connector, plain text (no markdown)
-                            let wrapped =
-                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, text)| {
-                                    let prefix = if i == 0 {
-                                        Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR))
-                                    } else {
-                                        Span::styled("  ", Style::new().fg(TOOL_CONNECTOR))
-                                    };
-                                    Line::from(vec![
-                                        prefix,
-                                        Span::styled(text, Style::new().fg(TEXT_DIM)),
-                                    ])
-                                })
-                                .collect()
-                        }
-                        OutputType::DiffAdd => {
-                            // Added line - green background, no padding
-                            vec![Line::from(vec![
-                                Span::styled("  ", Style::new()),
-                                Span::styled(
-                                    &output_line.content,
-                                    Style::new().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG),
-                                ),
-                            ])]
-                        }
-                        OutputType::DiffRemove => {
-                            // Removed line - red background, no padding
-                            vec![Line::from(vec![
-                                Span::styled("  ", Style::new()),
-                                Span::styled(
-                                    &output_line.content,
-                                    Style::new().fg(DIFF_REMOVE_FG).bg(DIFF_REMOVE_BG),
-                                ),
-                            ])]
-                        }
-                        OutputType::DiffContext => {
-                            // Context line - dim
-                            let content = &output_line.content;
-                            vec![Line::from(vec![
-                                Span::styled("  ", Style::new()),
-                                Span::styled(
-                                    format!(
-                                        "{:width$}",
-                                        content,
-                                        width = inner_width.saturating_sub(2)
-                                    ),
-                                    Style::new().fg(TEXT_DIM),
-                                ),
-                            ])]
-                        }
-                        OutputType::DiffHeader => {
-                            // Diff header - dim, indented to align with diff content
-                            let content = &output_line.content;
-                            vec![Line::from(vec![
-                                Span::styled("  ", Style::new()),
-                                Span::styled(
-                                    format!(
-                                        "{:width$}",
-                                        content,
-                                        width = inner_width.saturating_sub(2)
-                                    ),
-                                    Style::new().fg(TEXT_DIM),
-                                ),
-                            ])]
-                        }
-                        OutputType::Error => {
-                            // Error - red
-                            let wrapped =
-                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped
-                                .into_iter()
-                                .map(|text| {
-                                    Line::from(vec![
-                                        Span::styled("✗ ", Style::new().fg(LOGO_CORAL)),
-                                        Span::styled(text, Style::new().fg(LOGO_CORAL)),
-                                    ])
-                                })
-                                .collect()
-                        }
-                        OutputType::BashCommand => {
-                            // Bash command - gold with $ prefix
-                            let wrapped =
-                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, text)| {
-                                    if i == 0 {
-                                        Line::from(vec![
-                                            Span::styled(text, Style::new().fg(LOGO_GOLD).bold()),
-                                        ])
-                                    } else {
-                                        Line::from(vec![
-                                            Span::styled("  ", Style::new()),
-                                            Span::styled(text, Style::new().fg(LOGO_GOLD).bold()),
-                                        ])
-                                    }
-                                })
-                                .collect()
-                        }
-                        OutputType::BashOutput => {
-                            // Bash output - dim text with connector
-                            let wrapped =
-                                wrap_text(&output_line.content, inner_width.saturating_sub(2));
-                            wrapped
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, text)| {
-                                    let prefix = if i == 0 {
-                                        Span::styled("│ ", Style::new().fg(LOGO_GOLD))
-                                    } else {
-                                        Span::styled("│ ", Style::new().fg(LOGO_GOLD))
-                                    };
-                                    Line::from(vec![
-                                        prefix,
-                                        Span::styled(text, Style::new().fg(TEXT_DIM)),
-                                    ])
-                                })
-                                .collect()
-                        }
+
+                        lines
                     }
-                })
-                .collect();
+                    OutputType::ToolOutput => {
+                        // Tool output - └ connector, plain text (no markdown)
+                        let wrapped =
+                            wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                        wrapped
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, text)| {
+                                let prefix = if i == 0 {
+                                    Span::styled("└ ", Style::new().fg(TOOL_CONNECTOR))
+                                } else {
+                                    Span::styled("  ", Style::new().fg(TOOL_CONNECTOR))
+                                };
+                                Line::from(vec![
+                                    prefix,
+                                    Span::styled(text, Style::new().fg(TEXT_DIM)),
+                                ])
+                            })
+                            .collect()
+                    }
+                    OutputType::DiffAdd => {
+                        // Added line - green background, no padding
+                        vec![Line::from(vec![
+                            Span::styled("  ", Style::new()),
+                            Span::styled(
+                                &output_line.content,
+                                Style::new().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG),
+                            ),
+                        ])]
+                    }
+                    OutputType::DiffRemove => {
+                        // Removed line - red background, no padding
+                        vec![Line::from(vec![
+                            Span::styled("  ", Style::new()),
+                            Span::styled(
+                                &output_line.content,
+                                Style::new().fg(DIFF_REMOVE_FG).bg(DIFF_REMOVE_BG),
+                            ),
+                        ])]
+                    }
+                    OutputType::DiffContext => {
+                        // Context line - dim
+                        let content = &output_line.content;
+                        vec![Line::from(vec![
+                            Span::styled("  ", Style::new()),
+                            Span::styled(
+                                format!(
+                                    "{:width$}",
+                                    content,
+                                    width = inner_width.saturating_sub(2)
+                                ),
+                                Style::new().fg(TEXT_DIM),
+                            ),
+                        ])]
+                    }
+                    OutputType::DiffHeader => {
+                        // Diff header - dim, indented to align with diff content
+                        let content = &output_line.content;
+                        vec![Line::from(vec![
+                            Span::styled("  ", Style::new()),
+                            Span::styled(
+                                format!(
+                                    "{:width$}",
+                                    content,
+                                    width = inner_width.saturating_sub(2)
+                                ),
+                                Style::new().fg(TEXT_DIM),
+                            ),
+                        ])]
+                    }
+                    OutputType::Error => {
+                        // Error - red
+                        let wrapped =
+                            wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                        wrapped
+                            .into_iter()
+                            .map(|text| {
+                                Line::from(vec![
+                                    Span::styled("✗ ", Style::new().fg(LOGO_CORAL)),
+                                    Span::styled(text, Style::new().fg(LOGO_CORAL)),
+                                ])
+                            })
+                            .collect()
+                    }
+                    OutputType::BashCommand => {
+                        // Bash command - gold with $ prefix
+                        let wrapped =
+                            wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                        wrapped
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, text)| {
+                                if i == 0 {
+                                    Line::from(vec![Span::styled(
+                                        text,
+                                        Style::new().fg(LOGO_GOLD).bold(),
+                                    )])
+                                } else {
+                                    Line::from(vec![
+                                        Span::styled("  ", Style::new()),
+                                        Span::styled(text, Style::new().fg(LOGO_GOLD).bold()),
+                                    ])
+                                }
+                            })
+                            .collect()
+                    }
+                    OutputType::BashOutput => {
+                        // Bash output - dim text with connector
+                        let wrapped =
+                            wrap_text(&output_line.content, inner_width.saturating_sub(2));
+                        wrapped
+                            .into_iter()
+                            .map(|text| {
+                                let prefix = Span::styled("│ ", Style::new().fg(LOGO_GOLD));
+                                Line::from(vec![
+                                    prefix,
+                                    Span::styled(text, Style::new().fg(TEXT_DIM)),
+                                ])
+                            })
+                            .collect()
+                    }
+                };
+                all_lines.extend(lines_for_output);
+                last_line_type = Some(&output_line.line_type);
+            }
 
             // Apply scroll offset to visual lines
             // usize::MAX means "scroll to bottom"
@@ -1197,10 +1208,7 @@ pub fn render_input_bar(frame: &mut Frame, area: Rect, app: &mut App) {
                 format!("$ {} ", display_cmd),
                 Style::new().fg(LOGO_GOLD),
             ));
-            spans.push(Span::styled(
-                elapsed.clone(),
-                Style::new().fg(TEXT_DIM),
-            ));
+            spans.push(Span::styled(elapsed.clone(), Style::new().fg(TEXT_DIM)));
         }
 
         Line::from(spans)
@@ -1921,22 +1929,23 @@ pub fn render_permission_dialog(frame: &mut Frame, area: Rect, app: &mut App) {
         option_count = perm.options.len();
 
         // Header
-        let title = perm
-            .title
-            .clone()
-            .unwrap_or_else(|| "Tool".to_string());
-        
+        let title = perm.title.clone().unwrap_or_else(|| "Tool".to_string());
+
         // Parse title as markdown since it often contains backticks
         let skin = ratskin::RatSkin::default();
         let parsed_title_lines = skin.parse(
             ratskin::RatSkin::parse_text(&title),
             area.width.saturating_sub(25), // Account for prefix width
         );
-        
+
         for (i, mut line) in parsed_title_lines.into_iter().enumerate() {
             if i == 0 {
-                line.spans.insert(0, Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()));
-                line.spans.insert(0, Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)));
+                line.spans.insert(
+                    0,
+                    Span::styled("Permission required: ", Style::new().fg(LOGO_GOLD).bold()),
+                );
+                line.spans
+                    .insert(0, Span::styled("⚠ ", Style::new().fg(LOGO_GOLD)));
             }
             lines.push(line);
         }
@@ -2253,21 +2262,20 @@ pub fn render_bug_report_popup(frame: &mut Frame, area: Rect, app: &App) {
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    let mut lines: Vec<Line> = vec![];
-
-    // Title
-    lines.push(Line::from(vec![Span::styled(
-        "Report a Bug",
-        Style::new().fg(LOGO_CORAL).bold(),
-    )]));
-    lines.push(Line::raw(""));
-
-    // Instructions
-    lines.push(Line::from(vec![Span::styled(
-        "Describe the bug you encountered:",
-        Style::new().fg(TEXT_DIM),
-    )]));
-    lines.push(Line::raw(""));
+    let mut lines: Vec<Line> = vec![
+        // Title
+        Line::from(vec![Span::styled(
+            "Report a Bug",
+            Style::new().fg(LOGO_CORAL).bold(),
+        )]),
+        Line::raw(""),
+        // Instructions
+        Line::from(vec![Span::styled(
+            "Describe the bug you encountered:",
+            Style::new().fg(TEXT_DIM),
+        )]),
+        Line::raw(""),
+    ];
 
     // Input field
     let description = if let Some(bug_report) = &app.bug_report {

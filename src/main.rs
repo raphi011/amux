@@ -36,8 +36,7 @@ use clipboard::ClipboardContent;
 use events::Action;
 use picker::Picker;
 use session::{
-    AgentType, OutputType, PendingPermission, PendingQuestion, SessionState,
-    check_all_agents,
+    AgentType, OutputType, PendingPermission, PendingQuestion, SessionState, check_all_agents,
 };
 
 /// Internal app events for async operations
@@ -380,27 +379,25 @@ async fn submit_bug_report(
         description,
         session_id,
         log_path.display(),
-        tokio::fs::read_to_string(log_path).await.unwrap_or_else(|_| "(could not read log file)".to_string())
+        tokio::fs::read_to_string(log_path)
+            .await
+            .unwrap_or_else(|_| "(could not read log file)".to_string())
     );
 
-    let title = format!("[Bug Report] {}", if description.len() > 50 {
-        format!("{}...", &description[..47])
-    } else {
-        description.to_string()
-    });
+    let title = format!(
+        "[Bug Report] {}",
+        if description.len() > 50 {
+            format!("{}...", &description[..47])
+        } else {
+            description.to_string()
+        }
+    );
 
     log::log(&format!("Submitting bug report: {}", title));
 
     let output = tokio::process::Command::new("gh")
         .args([
-            "issue",
-            "create",
-            "--repo",
-            repo,
-            "--title",
-            &title,
-            "--body",
-            &body,
+            "issue", "create", "--repo", repo, "--title", &title, "--body", &body,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -422,7 +419,8 @@ async fn submit_bug_report(
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn print_help() {
-    println!("amux {VERSION} - Terminal multiplexer for AI coding agents
+    println!(
+        "amux {VERSION} - Terminal multiplexer for AI coding agents
 
 USAGE:
     amux [OPTIONS] [DIRECTORY]
@@ -434,7 +432,8 @@ OPTIONS:
     -w, --worktree-dir <PATH>    Directory for git worktrees
     -V, --version                Print version information
     -h, --help                   Print this help message
-");
+"
+    );
 }
 
 #[tokio::main]
@@ -502,7 +501,8 @@ async fn main() -> Result<()> {
     let config = config::Config::load();
 
     // Load worktree config with precedence: CLI > env var > config file > default
-    let worktree_config = WorktreeConfig::load(worktree_dir_override.or(config.worktree_dir.clone()));
+    let worktree_config =
+        WorktreeConfig::load(worktree_dir_override.or(config.worktree_dir.clone()));
 
     // Setup terminal
     enable_raw_mode()?;
@@ -1300,17 +1300,16 @@ where
                                     }
                                     KeyCode::Enter => {
                                         // Spawn session with selected agent (only if available)
-                                        if let Some(picker) = &app.agent_picker {
-                                            if picker.selected_is_available() {
-                                                if let Some(agent_type) = picker.selected_agent() {
-                                                    let cwd = picker.cwd.clone();
-                                                    let is_worktree = picker.is_worktree;
-                                                    app.close_agent_picker();
-                                                    spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
-                                                }
-                                            }
-                                            // If not available, do nothing (user can see the ✗ markers)
+                                        if let Some(picker) = &app.agent_picker
+                                            && picker.selected_is_available()
+                                            && let Some(agent_type) = picker.selected_agent()
+                                        {
+                                            let cwd = picker.cwd.clone();
+                                            let is_worktree = picker.is_worktree;
+                                            app.close_agent_picker();
+                                            spawn_agent_in_dir(app, &agent_tx, &mut agent_commands, agent_type, cwd, is_worktree).await?;
                                         }
+                                        // If not available, do nothing (user can see the ✗ markers)
                                     }
                                     _ => {}
                                 }
@@ -1360,15 +1359,15 @@ where
                                     }
                                     KeyCode::Enter => {
                                         // Submit bug report
-                                        if let Some((description, log_path)) = app.take_bug_report() {
-                                            if !description.trim().is_empty() {
-                                                let session_id = app.session_id.clone().unwrap_or_default();
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = submit_bug_report(&description, &log_path, &session_id).await {
-                                                        log::log(&format!("Failed to submit bug report: {}", e));
-                                                    }
-                                                });
-                                            }
+                                        if let Some((description, log_path)) = app.take_bug_report()
+                                            && !description.trim().is_empty()
+                                        {
+                                            let session_id = app.session_id.clone().unwrap_or_default();
+                                            tokio::spawn(async move {
+                                                if let Err(e) = submit_bug_report(&description, &log_path, &session_id).await {
+                                                    log::log(&format!("Failed to submit bug report: {}", e));
+                                                }
+                                            });
                                         }
                                     }
                                     KeyCode::Char(c) => {
@@ -1570,13 +1569,13 @@ where
                                                         log::log(&format!("Removed worktree: {}", worktree_path.display()));
 
                                                         // Delete branch if requested
-                                                        if delete_branches {
-                                                            if let Some(branch_name) = branch {
-                                                                if let Err(e) = git::delete_branch(&parent_repo, &branch_name, false).await {
-                                                                    log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
-                                                                } else {
-                                                                    log::log(&format!("Deleted branch: {}", branch_name));
-                                                                }
+                                                        if delete_branches
+                                                            && let Some(branch_name) = branch
+                                                        {
+                                                            if let Err(e) = git::delete_branch(&parent_repo, &branch_name, false).await {
+                                                                log::log(&format!("Failed to delete branch {}: {}", branch_name, e));
+                                                            } else {
+                                                                log::log(&format!("Deleted branch: {}", branch_name));
                                                             }
                                                         }
 
@@ -1695,16 +1694,16 @@ where
                                                 let session_id = session.id.clone();
                                                 let cwd = session.cwd.clone();
                                                 let command = text.clone();
-                                                
+
                                                 // Add command to output
                                                 let session_idx = app.sessions.selected_index();
                                                 if let Some(session) = app.sessions.sessions_mut().get_mut(session_idx) {
                                                     session.add_output(format!("$ {}", command), OutputType::BashCommand);
                                                 }
-                                                
+
                                                 // Start tracking the command
                                                 app.start_bash_command(command.clone());
-                                                
+
                                                 // Execute asynchronously
                                                 let tx = app_event_tx.clone();
                                                 tokio::spawn(async move {
@@ -1714,7 +1713,7 @@ where
                                                         .current_dir(&cwd)
                                                         .output()
                                                         .await;
-                                                    
+
                                                     let (output_text, success) = match output {
                                                         Ok(out) => {
                                                             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1730,7 +1729,7 @@ where
                                                         }
                                                         Err(e) => (format!("Error: {}", e), false),
                                                     };
-                                                    
+
                                                     let _ = tx.send(AppEvent::BashCommandCompleted {
                                                         session_id,
                                                         command,
@@ -1987,18 +1986,18 @@ where
                     AppEvent::WorktreeDeletionFailed(path, error) => {
                         log::log(&format!("Failed to delete worktree {}: {}", path.display(), error));
                         // Mark entry as no longer deleting (so user can retry)
-                        if let Some(cleanup) = &mut app.worktree_cleanup {
-                            if let Some(entry) = cleanup.entries.iter_mut().find(|e| e.path == path) {
-                                entry.is_deleting = false;
-                                entry.selected = false;
-                            }
+                        if let Some(cleanup) = &mut app.worktree_cleanup
+                            && let Some(entry) = cleanup.entries.iter_mut().find(|e| e.path == path)
+                        {
+                            entry.is_deleting = false;
+                            entry.selected = false;
                         }
                     }
                     #[allow(unused_variables)]
                     AppEvent::BashCommandCompleted { session_id, command, output, success } => {
                         // Clear the running command tracker
                         app.complete_bash_command();
-                        
+
                         // Find the session and add the output
                         if let Some(session) = app.sessions.sessions_mut().iter_mut().find(|s| s.id == session_id) {
                             // Add output lines
@@ -2014,6 +2013,8 @@ where
                             }
                             // Add empty line for spacing
                             session.add_output(String::new(), OutputType::Text);
+                            // Scroll to bottom to show the output
+                            session.scroll_to_bottom();
                         }
                     }
                 }
@@ -2046,11 +2047,8 @@ async fn spawn_agent_in_dir(
     }
 
     // Convert MCP servers from config format to protocol format
-    let mcp_servers: Vec<acp::McpServer> = app
-        .mcp_servers
-        .iter()
-        .map(acp::McpServer::from)
-        .collect();
+    let mcp_servers: Vec<acp::McpServer> =
+        app.mcp_servers.iter().map(acp::McpServer::from).collect();
 
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
@@ -2090,7 +2088,10 @@ async fn spawn_agent_in_dir(
                 }
 
                 // Create session with MCP servers
-                if let Err(e) = conn.new_session(cwd_clone.to_str().unwrap_or("."), mcp_servers).await {
+                if let Err(e) = conn
+                    .new_session(cwd_clone.to_str().unwrap_or("."), mcp_servers)
+                    .await
+                {
                     let _ = event_tx
                         .send(AgentEvent::Error {
                             message: format!("Session failed: {}", e),
@@ -2193,11 +2194,8 @@ async fn spawn_agent_with_resume(
     }
 
     // Convert MCP servers from config format to protocol format
-    let mcp_servers: Vec<acp::McpServer> = app
-        .mcp_servers
-        .iter()
-        .map(acp::McpServer::from)
-        .collect();
+    let mcp_servers: Vec<acp::McpServer> =
+        app.mcp_servers.iter().map(acp::McpServer::from).collect();
 
     // Channel for commands to this agent
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<AgentCommand>(32);
@@ -2238,7 +2236,11 @@ async fn spawn_agent_with_resume(
 
                 // Load existing session with MCP servers
                 if let Err(e) = conn
-                    .load_session(&resume_session_id, cwd_clone.to_str().unwrap_or("."), mcp_servers)
+                    .load_session(
+                        &resume_session_id,
+                        cwd_clone.to_str().unwrap_or("."),
+                        mcp_servers,
+                    )
                     .await
                 {
                     let _ = event_tx
@@ -2472,9 +2474,7 @@ fn handle_agent_event(app: &mut App, session_id: &str, event: AgentEvent) -> Eve
                         let name = title
                             .filter(|t| {
                                 let trimmed = t.trim();
-                                !trimmed.is_empty()
-                                    && trimmed != "undefined"
-                                    && trimmed != "null"
+                                !trimmed.is_empty() && trimmed != "undefined" && trimmed != "null"
                             })
                             .unwrap_or_else(|| "Tool".to_string());
 

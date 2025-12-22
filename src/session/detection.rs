@@ -66,12 +66,10 @@ fn check_claude_code() -> Vec<Precondition> {
     let acp_command = command_exists("claude-code-acp");
     let npx_available = command_exists("npx");
 
-    vec![
-        Precondition {
-            description: "claude-code-acp command",
-            satisfied: acp_command || npx_available,
-        },
-    ]
+    vec![Precondition {
+        description: "claude-code-acp command",
+        satisfied: acp_command || npx_available,
+    }]
 }
 
 /// Check preconditions for Gemini CLI

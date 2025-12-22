@@ -175,10 +175,7 @@ pub struct AgentPickerState {
 impl AgentPickerState {
     pub fn new(cwd: PathBuf, is_worktree: bool, agents: Vec<AgentAvailability>) -> Self {
         // Start with first available agent selected, or 0 if none available
-        let selected = agents
-            .iter()
-            .position(|a| a.is_available())
-            .unwrap_or(0);
+        let selected = agents.iter().position(|a| a.is_available()).unwrap_or(0);
         Self {
             cwd,
             selected,
@@ -278,7 +275,7 @@ pub struct CleanupEntry {
     pub branch: Option<String>,
     pub is_clean: bool,
     pub is_merged: bool,
-    pub selected: bool,   // Whether this entry is selected for cleanup
+    pub selected: bool,    // Whether this entry is selected for cleanup
     pub is_deleting: bool, // Whether this entry is currently being deleted
 }
 
@@ -477,9 +474,7 @@ impl BugReportState {
     pub fn input_right(&mut self) {
         if self.cursor_position < self.description.len() {
             let mut new_pos = self.cursor_position + 1;
-            while new_pos < self.description.len()
-                && !self.description.is_char_boundary(new_pos)
-            {
+            while new_pos < self.description.len() && !self.description.is_char_boundary(new_pos) {
                 new_pos += 1;
             }
             self.cursor_position = new_pos;
@@ -618,7 +613,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(start_dir: PathBuf, worktree_config: WorktreeConfig, mcp_servers: Vec<McpServerConfig>) -> Self {
+    pub fn new(
+        start_dir: PathBuf,
+        worktree_config: WorktreeConfig,
+        mcp_servers: Vec<McpServerConfig>,
+    ) -> Self {
         Self {
             sessions: SessionManager::new(),
             input_mode: InputMode::Normal,
@@ -735,7 +734,7 @@ impl App {
     /// Advance spinner animation (every other tick to slow it down)
     pub fn tick_spinner(&mut self) {
         self.spinner_tick += 1;
-        if self.spinner_tick % 2 == 0 {
+        if self.spinner_tick.is_multiple_of(2) {
             self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
         }
     }
@@ -791,7 +790,12 @@ impl App {
     }
 
     /// Open the agent picker for the given directory
-    pub fn open_agent_picker(&mut self, cwd: PathBuf, is_worktree: bool, agents: Vec<AgentAvailability>) {
+    pub fn open_agent_picker(
+        &mut self,
+        cwd: PathBuf,
+        is_worktree: bool,
+        agents: Vec<AgentAvailability>,
+    ) {
         self.agent_picker = Some(AgentPickerState::new(cwd, is_worktree, agents));
         self.input_mode = InputMode::AgentPicker;
     }

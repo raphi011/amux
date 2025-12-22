@@ -817,7 +817,12 @@ impl AgentConnection {
     }
 
     /// Load an existing session
-    pub async fn load_session(&mut self, session_id: &str, cwd: &str, mcp_servers: Vec<McpServer>) -> Result<()> {
+    pub async fn load_session(
+        &mut self,
+        session_id: &str,
+        cwd: &str,
+        mcp_servers: Vec<McpServer>,
+    ) -> Result<()> {
         let params = LoadSessionParams {
             session_id: session_id.to_string(),
             cwd: cwd.to_string(),
