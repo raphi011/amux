@@ -162,6 +162,19 @@ These features are defined in ACP RFDs (Requests for Dialog) but are in draft st
 
 ## Development
 
+### String Handling: Bytes vs Characters
+
+Rust strings use UTF-8 encoding where characters can be 1-4 bytes. This matters for:
+
+- **Cursor positions** (`cursor_position` in `App`) - stored as **byte offsets** into the string
+- **Display width** - use **character count** (`.chars().count()`) for terminal column calculations
+- **Text wrapping** - compare against **character count**, not byte length (`.len()`)
+
+When working with input buffers:
+- Use `.is_char_boundary(pos)` before indexing to avoid panics on multi-byte chars
+- Convert byte position to char position for display: `input[..byte_pos].chars().count()`
+- Use `.char_indices()` to iterate with both byte positions and characters
+
 Before building or committing, always run these checks:
 
 ```bash
