@@ -110,8 +110,11 @@ impl FolderPickerState {
             .all_entries
             .iter()
             .filter(|e| {
-                // Always show parent directory entry
-                e.is_parent || e.name.to_lowercase().contains(&query_lower)
+                // When filtering, skip parent entry so it doesn't always match first
+                if e.is_parent {
+                    return query_lower.is_empty();
+                }
+                e.name.to_lowercase().contains(&query_lower)
             })
             .cloned()
             .collect();
